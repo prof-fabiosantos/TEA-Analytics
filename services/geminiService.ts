@@ -41,7 +41,7 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
   
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         systemInstruction: "Extraia métricas de evolução temporal.",
@@ -96,7 +96,7 @@ export const sendChatMessage = async (
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: [
         { role: 'user', parts: [{ text: contextPrompt }] }, 
         ...history.map(h => ({
