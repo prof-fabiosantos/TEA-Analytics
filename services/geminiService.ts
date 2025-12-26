@@ -3,7 +3,14 @@ import { Report, ChatMessage, EvolutionMetric } from "../types";
 
 // Initialize the API client
 // Note: The API key must be obtained exclusively from the environment variable process.env.API_KEY
-const getAiClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    console.error("CRITICAL: API_KEY is missing in process.env. Ensure it is set in your environment variables (.env file or Vercel settings) and that vite.config.ts is configured to expose it.");
+    throw new Error("API Key configuration missing");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 const SYSTEM_INSTRUCTION = `
 Você é um especialista clínico sênior em desenvolvimento infantil e autismo (TEA).
@@ -37,11 +44,10 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
   ${sortedReports.map(r => `[Data: ${r.date}] [Tipo: ${r.type}] Conteúdo: ${r.content}`).join('\n\n')}
   `;
 
-  const ai = getAiClient();
-  
   try {
+    const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         systemInstruction: "Extraia métricas de evolução temporal.",
@@ -69,7 +75,7 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
     return JSON.parse(cleanedText) as EvolutionMetric[];
   } catch (error) {
     console.error("Error analyzing evolution:", error);
-    return [];
+    throw error; // Re-throw to be caught by component
   }
 };
 
@@ -78,7 +84,6 @@ export const sendChatMessage = async (
   history: ChatMessage[],
   reports: Report[]
 ): Promise<string> => {
-  const ai = getAiClient();
   
   const sortedReports = [...reports].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
@@ -95,8 +100,9 @@ export const sendChatMessage = async (
   `;
 
   try {
+    const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: [
         { role: 'user', parts: [{ text: contextPrompt }] }, 
         ...history.map(h => ({
@@ -113,6 +119,6 @@ export const sendChatMessage = async (
     return response.text || "Desculpe, não consegui gerar uma análise com base nos relatórios.";
   } catch (error) {
     console.error("Error in chat:", error);
-    return "Ocorreu um erro ao processar sua solicitação. Por favor, verifique sua conexão ou tente novamente.";
+    return "Ocorreu um erro ao processar sua solicitação. Verifique se a API Key está configurada.";
   }
 };

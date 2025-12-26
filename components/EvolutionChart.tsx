@@ -9,12 +9,16 @@ interface EvolutionChartProps {
 
 export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
   const [data, setData] = useState<EvolutionMetric[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Initialize loading to true if we have enough reports, to prevent render flash of empty chart
+  const [loading, setLoading] = useState(reports.length >= 2);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
-      if (reports.length < 2) return; // Need at least 2 points to show a line
+      if (reports.length < 2) {
+        setLoading(false);
+        return;
+      }
       
       setLoading(true);
       setError(null);
@@ -22,7 +26,8 @@ export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
         const result = await analyzeEvolution(reports);
         setData(result);
       } catch (e) {
-        setError("Não foi possível gerar o gráfico de evolução no momento.");
+        console.error(e);
+        setError("Não foi possível gerar o gráfico. Verifique se a API Key está configurada corretamente.");
       } finally {
         setLoading(false);
       }
@@ -30,7 +35,7 @@ export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
 
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports.length]); // Only re-analyze if report count changes to save tokens
+  }, [reports.length]); 
 
   if (reports.length < 2) {
     return (
@@ -46,7 +51,7 @@ export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
     return (
       <div className="h-64 flex flex-col items-center justify-center bg-white rounded-xl border border-gray-200">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-600 mb-2"></div>
-        <p className="text-gray-500 text-sm">Analisando evolução...</p>
+        <p className="text-gray-500 text-sm">A IA está analisando a evolução...</p>
       </div>
     );
   }
@@ -54,7 +59,15 @@ export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
   if (error) {
     return (
       <div className="h-64 flex items-center justify-center bg-white rounded-xl border border-gray-200">
-        <p className="text-red-500">{error}</p>
+        <p className="text-red-500 px-4 text-center text-sm">{error}</p>
+      </div>
+    );
+  }
+
+  if (data.length === 0) {
+     return (
+      <div className="h-64 flex items-center justify-center bg-white rounded-xl border border-gray-200">
+        <p className="text-gray-400 text-sm">Dados insuficientes para gerar gráfico.</p>
       </div>
     );
   }
@@ -68,7 +81,8 @@ export const EvolutionChart: React.FC<EvolutionChartProps> = ({ reports }) => {
   return (
     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
       <h3 className="text-lg font-semibold text-gray-800 mb-4">Evolução Qualitativa Estimada (0-10)</h3>
-      <div className="h-64 w-full">
+      {/* min-w-0 prevents flexbox collapse issues that cause Recharts width(-1) error */}
+      <div className="h-64 w-full min-w-0">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={formattedData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
