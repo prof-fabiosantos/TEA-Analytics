@@ -1,23 +1,6 @@
 import Stripe from 'stripe';
 
-// Inicializa o Stripe.
-// Nota: No Vercel, as variáveis de ambiente são acessadas via process.env automaticamente.
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-const DOMAIN = process.env.VERCEL_URL 
-  ? `https://${process.env.VERCEL_URL}` 
-  : 'http://localhost:5173';
-
-const PLANS = {
-  'pro': {
-    priceId: process.env.STRIPE_PRICE_ID_PRO || 'price_1Hh1...REPLACE_WITH_REAL', 
-    name: 'Plano Profissional'
-  },
-  'semester': {
-    priceId: process.env.STRIPE_PRICE_ID_SEMESTER || 'price_1Hh2...REPLACE_WITH_REAL',
-    name: 'Plano Econômico'
-  }
-};
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -27,15 +10,47 @@ export default async function handler(req, res) {
 
   try {
     const { planType, userEmail, userId } = req.body;
+
+    // Determina a URL base. 
+    // 1. Tenta usar CLIENT_URL definida nas env vars (Recomendado para Prod).
+    // 2. Se não, usa VERCEL_URL (gerada automaticamente pelo Vercel), adicionando https://.
+    // 3. Fallback para localhost.
+    let domain = process.env.CLIENT_URL;
+    if (!domain) {
+      domain = process.env.VERCEL_URL 
+        ? `https://${process.env.VERCEL_URL}` 
+        : 'http://localhost:5173';
+    }
     
-    const priceId = PLANS[planType]?.priceId;
-    const planName = PLANS[planType]?.name || 'Assinatura TEA Analytics';
+    // Remove slash final se existir para evitar duplicação na URL
+    domain = domain.replace(/\/$/, "");
+
+    const PLANS = {
+      'pro': {
+        priceId: process.env.STRIPE_PRICE_ID_PRO, 
+        name: 'Plano Profissional'
+      },
+      'semester': {
+        priceId: process.env.STRIPE_PRICE_ID_SEMESTER,
+        name: 'Plano Econômico'
+      }
+    };
+    
+    const selectedPlan = PLANS[planType];
+    const priceId = selectedPlan?.priceId;
+    const planName = selectedPlan?.name || 'Assinatura TEA Analytics';
+
+    // Validação básica
+    if (!userEmail || !userId) {
+       throw new Error("Dados do usuário incompletos.");
+    }
 
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
         {
-          // Lógica híbrida: Se tiver ID real usa 'price', senão cria dados na hora (para teste)
+          // Se tivermos um ID de preço real configurado no Vercel, usamos ele.
+          // Caso contrário, criamos um preço dinâmico (útil se as chaves não estiverem configuradas ainda)
           ...(priceId && !priceId.includes('REPLACE') 
             ? { price: priceId } 
             : {
@@ -44,16 +59,16 @@ export default async function handler(req, res) {
                 product_data: {
                   name: planName,
                 },
-                unit_amount: planType === 'pro' ? 2000 : 11000, // 20.00 ou 110.00
+                unit_amount: planType === 'pro' ? 2000 : 11000, // Fallback values
               },
             }
           ),
           quantity: 1,
         },
       ],
-      mode: 'payment', // Use 'subscription' se tiver configurado recorrência no Stripe
-      success_url: `${DOMAIN}/?payment_success=true&plan=${planType}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${DOMAIN}/?canceled=true`,
+      mode: 'payment', 
+      success_url: `${domain}/?payment_success=true&plan=${planType}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${domain}/?canceled=true`,
       customer_email: userEmail,
       metadata: {
         userId: userId,
@@ -66,6 +81,6 @@ export default async function handler(req, res) {
     res.status(200).json({ url: session.url });
   } catch (error) {
     console.error("Stripe API Error:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || "Erro interno ao criar sessão de pagamento" });
   }
 }
