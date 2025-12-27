@@ -3,21 +3,18 @@ import react from '@vitejs/plugin-react';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Carrega variáveis de arquivos .env (local)
-  // Use (process as any) to avoid TS error: Property 'cwd' does not exist on type 'Process'
-  const envFile = loadEnv(mode, (process as any).cwd(), '');
-  
-  // Mescla variáveis do sistema (Vercel/Node) com as do arquivo .env
-  // Isso garante que as variáveis definidas no Painel da Vercel sejam vistas aqui
-  const processEnv = { ...process.env, ...envFile };
+  // Carrega variáveis de arquivos .env (local) para uso no Node durante o build
+  // Use (process as any).cwd() para evitar erro de TS
+  const env = loadEnv(mode, (process as any).cwd(), '');
 
   return {
     plugins: [react()],
     define: {
-      // Polyfill process.env para compatibilidade, injetando os valores reais do build
-      'process.env.API_KEY': JSON.stringify(processEnv.API_KEY),
-      'process.env.VITE_SUPABASE_URL': JSON.stringify(processEnv.VITE_SUPABASE_URL),
-      'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(processEnv.VITE_SUPABASE_ANON_KEY)
+      // Apenas polifilamos process.env para bibliotecas legadas ou uso específico (como API_KEY do Gemini)
+      // As variáveis VITE_SUPABASE_* serão injetadas nativamente pelo Vite no import.meta.env
+      'process.env.API_KEY': JSON.stringify(env.API_KEY || process.env.API_KEY || ''),
+      // Mantemos um objeto vazio para segurança de libs que acessam process.env.NODE_ENV
+      'process.env': {} 
     },
     server: {
       proxy: {

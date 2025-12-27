@@ -1,22 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Helper function to safely get env vars in Vite (local or production)
-const getEnvVar = (key: string) => {
-  // 1. Tenta o padrão nativo do Vite (import.meta.env)
-  // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
-    // @ts-ignore
-    return import.meta.env[key];
-  }
-  // 2. Tenta o polyfill do process.env (definido no vite.config.ts)
-  if (typeof process !== 'undefined' && process.env && process.env[key]) {
-    return process.env[key];
-  }
-  return '';
-};
+// No Vite, a maneira correta e garantida de acessar variáveis VITE_ é via import.meta.env
+// Usamos uma string vazia como fallback para evitar crash imediato, mas validamos depois.
+let supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+let supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-let supabaseUrl = getEnvVar('VITE_SUPABASE_URL');
-let supabaseAnonKey = getEnvVar('VITE_SUPABASE_ANON_KEY');
+// --- DEBUG LOG ---
+// Isso aparecerá no Console do navegador (F12) para confirmar o que está sendo carregado.
+console.log(`[Supabase Init] Tentando conectar...`);
+console.log(`[Supabase Init] URL definida: ${supabaseUrl ? supabaseUrl : '(VAZIO)'}`);
+console.log(`[Supabase Init] Key definida: ${supabaseAnonKey ? 'Sim (Oculta)' : '(VAZIO)'}`);
+// -----------------
 
 // CORREÇÃO AUTOMÁTICA: Se o usuário colocou a string de conexão do banco (postgresql://)
 if (supabaseUrl.startsWith('postgresql://')) {
@@ -24,7 +18,7 @@ if (supabaseUrl.startsWith('postgresql://')) {
   const match = supabaseUrl.match(/@db\.([a-z0-9]+)\.supabase\.co/);
   if (match && match[1]) {
     supabaseUrl = `https://${match[1]}.supabase.co`;
-    console.log(`URL corrigida automaticamente para API: ${supabaseUrl}`);
+    console.log(`[Supabase Init] URL corrigida automaticamente para API: ${supabaseUrl}`);
   }
 }
 
@@ -33,12 +27,13 @@ const isUrlPlaceholder = !supabaseUrl || supabaseUrl.includes('placeholder');
 const isKeyPlaceholder = !supabaseAnonKey || supabaseAnonKey.includes('placeholder');
 
 if (!supabaseUrl) {
-    console.warn("VITE_SUPABASE_URL não encontrada. Usando placeholder.");
+    console.error("ERRO CRÍTICO: VITE_SUPABASE_URL não encontrada. O app não conseguirá conectar.");
+    // Fallback para evitar crash do JS, mas a conexão falhará
     supabaseUrl = 'https://placeholder.supabase.co';
 }
 
 if (!supabaseAnonKey) {
-    console.warn("VITE_SUPABASE_ANON_KEY não encontrada. Usando placeholder.");
+    console.error("ERRO CRÍTICO: VITE_SUPABASE_ANON_KEY não encontrada.");
     supabaseAnonKey = 'placeholder-key';
 }
 

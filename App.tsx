@@ -337,14 +337,16 @@ function App() {
       if (isPdf) {
         const text = await extractTextFromPdf(file);
         setNewReportContent(text);
-        setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
+        // FIX: Removed unescaped slash from regex to prevent syntax errors
+        setNewReportTitle(file.name.replace(/\.[^.]+$/, ""));
         addToast("PDF processado!", "success");
       } else {
         const reader = new FileReader();
         reader.onload = (ev) => {
             const text = ev.target?.result as string;
             setNewReportContent(text || "");
-            setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
+            // FIX: Removed unescaped slash from regex to prevent syntax errors
+            setNewReportTitle(file.name.replace(/\.[^.]+$/, ""));
             setIsUploading(false);
         };
         reader.readAsText(file);
