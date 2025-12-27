@@ -13,6 +13,7 @@ interface ChatInterfaceProps {
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages, setMessages }) => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -46,6 +47,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
     setMessages(prev => [...prev, newUserMessage]);
     setInputValue('');
     setIsLoading(true);
+    
+    // First interaction might take longer due to RAG indexing
+    const isFirstInteraction = messages.length <= 1;
+    if (isFirstInteraction) {
+      setLoadingText('Indexando documentos e buscando informações...');
+    } else {
+      setLoadingText('Consultando base de conhecimento...');
+    }
 
     try {
       const responseText = await sendChatMessage(newUserMessage.text, messages, reports);
@@ -68,6 +77,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
       }]);
     } finally {
       setIsLoading(false);
+      setLoadingText('');
     }
   };
 
@@ -83,10 +93,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
       <div className="bg-teal-600 p-4 text-white">
         <h3 className="font-semibold flex items-center gap-2">
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Assistente Terapêutico
+          Assistente Terapêutico (RAG Ativado)
         </h3>
         <p className="text-teal-100 text-xs mt-1">
-          Pergunte sobre evolução, padrões de comportamento ou sugestões de atividades.
+          Busca semântica inteligente em todos os seus relatórios PDF/Texto.
         </p>
       </div>
       
@@ -120,12 +130,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
           </div>
         ))}
         {isLoading && (
-          <div className="flex justify-start">
+          <div className="flex flex-col items-start gap-2">
             <div className="bg-white text-gray-500 border border-gray-200 rounded-2xl rounded-bl-none px-4 py-3 text-sm shadow-sm flex items-center gap-2">
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-75"></span>
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-150"></span>
             </div>
+            {loadingText && <span className="text-xs text-gray-400 ml-2 animate-pulse">{loadingText}</span>}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -137,7 +148,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ex: 'Com base nos relatórios, houve melhora na fala?'"
+            placeholder="Ex: 'O que os relatórios dizem sobre a evolução na escola?'"
             className="flex-1 resize-none border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none text-sm h-12"
           />
           <Button 
@@ -148,9 +159,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </Button>
         </div>
-        <p className="text-xs text-gray-400 mt-2 text-center">
-          A IA pode cometer erros. Sempre consulte os terapeutas responsáveis.
-        </p>
       </div>
     </div>
   );

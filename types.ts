@@ -29,6 +29,15 @@ export interface User {
   plan: 'free' | 'pro' | 'semester';
 }
 
+export interface RAGChunk {
+  id: string;
+  reportId: string;
+  reportDate: string;
+  reportType: string;
+  content: string;
+  embedding?: number[];
+}
+
 export enum AppView {
   LANDING = 'LANDING',
   LOGIN = 'LOGIN',

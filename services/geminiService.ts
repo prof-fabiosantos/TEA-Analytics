@@ -1,12 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Report, ChatMessage, EvolutionMetric } from "../types";
+import { indexReports, retrieveRelevantChunks } from "./ragService";
 
 // Initialize the API client
-// Note: The API key must be obtained exclusively from the environment variable process.env.API_KEY
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
-    console.error("CRITICAL: API_KEY is missing in process.env. Ensure it is set in your environment variables (.env file or Vercel settings) and that vite.config.ts is configured to expose it.");
+    console.error("CRITICAL: API_KEY is missing.");
     throw new Error("API Key configuration missing");
   }
   return new GoogleGenAI({ apiKey });
@@ -16,32 +16,30 @@ const SYSTEM_INSTRUCTION = `
 Você é um especialista clínico sênior em desenvolvimento infantil e autismo (TEA).
 
 MISSÃO PRINCIPAL:
-Analisar a EVOLUÇÃO da criança ao longo do tempo comparando os relatórios fornecidos.
+Responder dúvidas do usuário com base EXCLUSIVAMENTE nos trechos de relatórios fornecidos (Contexto Recuperado).
 
 DIRETRIZES:
-1. **Comparação Cronológica**: Sempre cite datas. Compare o relatório mais antigo com o mais recente para mostrar ganhos ou perdas.
-2. **Evidência**: Baseie suas respostas ESTRITAMENTE nos textos fornecidos. Se algo mudou, cite o relatório específico.
-3. **Ação**: Sugira intervenções práticas baseadas em ABA ou terapias citadas, focando nas áreas que apresentaram estagnação ou regressão.
-4. **Tom**: Clínico, encorajador, porém realista.
+1. **Evidência**: Use os trechos fornecidos. Se a informação não estiver nos trechos, diga "Não encontrei informações específicas sobre isso nos relatórios consultados".
+2. **Citação**: Sempre mencione a DATA do relatório de onde você tirou a informação (ex: "Segundo o relatório de 12/05/2024...").
+3. **Tom**: Clínico, encorajador, porém realista.
 
-Estruture suas respostas destacando: "Contexto Anterior" vs "Situação Atual".
+Estruture a resposta de forma clara e direta.
 `;
 
 export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetric[]> => {
   if (reports.length === 0) return [];
 
+  // For Evolution Chart, we still need a summary of all reports. 
+  // Since this is done once and usually involves fewer tokens than a long chat history, 
+  // we keep the logic but limit content size if needed.
   const sortedReports = [...reports].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
   const prompt = `
   Analise os seguintes relatórios terapêuticos cronológicos de uma criança.
   Para cada relatório, extraia uma pontuação qualitativa de 0 a 10 para as áreas: Comunicação, Interação Social, Comportamento (menos comportamentos disruptivos = nota maior) e Autonomia.
   
-  Importante:
-  - Considere a evolução. Se um relatório menciona "melhora significativa", a nota deve ser maior que o anterior.
-  - Se não houver menção explicita, mantenha a tendência do relatório anterior.
-  
   Relatórios:
-  ${sortedReports.map(r => `[Data: ${r.date}] [Tipo: ${r.type}] Conteúdo: ${r.content}`).join('\n\n')}
+  ${sortedReports.map(r => `[Data: ${r.date}] [Tipo: ${r.type}] Conteúdo (Resumo): ${r.content.slice(0, 1000)}...`).join('\n\n')}
   `;
 
   try {
@@ -62,7 +60,7 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
               interacaoSocial: { type: Type.NUMBER },
               comportamento: { type: Type.NUMBER },
               autonomia: { type: Type.NUMBER },
-              summary: { type: Type.STRING, description: "Resumo curto (max 10 palavras) do marco principal desta data." }
+              summary: { type: Type.STRING, description: "Resumo curto (max 10 palavras)." }
             }
           }
         }
@@ -75,9 +73,12 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
     return JSON.parse(cleanedText) as EvolutionMetric[];
   } catch (error) {
     console.error("Error analyzing evolution:", error);
-    throw error; // Re-throw to be caught by component
+    throw error;
   }
 };
+
+// Initialization check helper
+let isRAGInitialized = false;
 
 export const sendChatMessage = async (
   currentMessage: string,
@@ -85,40 +86,55 @@ export const sendChatMessage = async (
   reports: Report[]
 ): Promise<string> => {
   
-  const sortedReports = [...reports].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  // 1. Initialize RAG Index if not done yet
+  if (!isRAGInitialized && reports.length > 0) {
+    await indexReports(reports);
+    isRAGInitialized = true;
+  }
 
-  const contextPrompt = `
-  LINHA DO TEMPO CLÍNICA (Do mais antigo para o mais recente):
-  ${sortedReports.map(r => `
-  === DATA: ${r.date} | TIPO: ${r.type} ===
-  ${r.content}
-  =========================================
-  `).join('\n')}
+  // 2. Retrieve Relevant Context
+  const relevantChunks = await retrieveRelevantChunks(currentMessage);
   
-  Instrução Específica para esta mensagem:
-  Responda à pergunta do usuário considerando a trajetória evolutiva mostrada acima. Se a pergunta for sobre "melhora" ou "evolução", compare explicitamente o início e o fim da linha do tempo.
-  `;
+  const contextText = relevantChunks.map(chunk => `
+  === TRECHO DE RELATÓRIO ===
+  Data: ${chunk.reportDate}
+  Tipo: ${chunk.reportType}
+  Conteúdo: "...${chunk.content}..."
+  ===========================
+  `).join('\n');
+
+  // 3. Construct Prompt with RAG Context
+  // Note: We reduce history to last 5 messages to save tokens, relying on RAG for factual context
+  const recentHistory = history.slice(-5); 
 
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [
-        { role: 'user', parts: [{ text: contextPrompt }] }, 
-        ...history.map(h => ({
+        ...recentHistory.map(h => ({
           role: h.role,
           parts: [{ text: h.text }]
         })),
-        { role: 'user', parts: [{ text: currentMessage }] }
+        { 
+          role: 'user', 
+          parts: [{ text: `
+            CONTEXTO RECUPERADO DOS DOCUMENTOS (Use isso para responder):
+            ${contextText.length > 0 ? contextText : "Nenhum trecho relevante encontrado."}
+
+            PERGUNTA DO USUÁRIO:
+            ${currentMessage}
+          `}] 
+        }
       ],
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
       }
     });
 
-    return response.text || "Desculpe, não consegui gerar uma análise com base nos relatórios.";
+    return response.text || "Não consegui formular uma resposta.";
   } catch (error) {
     console.error("Error in chat:", error);
-    return "Ocorreu um erro ao processar sua solicitação. Verifique se a API Key está configurada.";
+    return "Ocorreu um erro ao processar. Verifique a API Key.";
   }
 };
