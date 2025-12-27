@@ -65,6 +65,10 @@ export const authService = {
   },
 
   getUserProfile: async (userId: string): Promise<User> => {
+    // Tenta obter também a sessão atual para pegar metadados caso o banco falhe
+    const { data: sessionData } = await supabase.auth.getSession();
+    const metaName = sessionData.session?.user?.user_metadata?.name;
+
     // Tenta buscar o perfil até 3 vezes (ajuda quando o Trigger do DB é lento na criação)
     let retries = 3;
     
@@ -78,7 +82,7 @@ export const authService = {
       if (data) {
         return {
           id: data.id,
-          name: data.name || 'Usuário',
+          name: data.name || metaName || 'Usuário',
           email: data.email,
           plan: data.plan as 'free' | 'pro' | 'semester'
         };
@@ -96,7 +100,12 @@ export const authService = {
     }
 
     // Fallback se falhar todas as tentativas
-    return { id: userId, name: 'Usuário', email: '', plan: 'free' }; 
+    return { 
+        id: userId, 
+        name: metaName || 'Usuário', 
+        email: sessionData.session?.user?.email || '', 
+        plan: 'free' 
+    }; 
   },
 
   refreshProfile: async (): Promise<User | null> => {
