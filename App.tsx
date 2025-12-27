@@ -43,38 +43,37 @@ function App() {
     const checkSession = async () => {
       try {
         const user = await authService.getCurrentUser();
-        if (mounted && user) {
-          setCurrentUser(user);
-          // Tenta carregar dados, mas não bloqueia a UI se falhar
-          try {
-            await loadUserData(); 
-          } catch (dataError) {
-            console.error("Erro ao carregar dados:", dataError);
-            addToast("Erro ao conectar ao banco. Verifique sua conexão.", "error");
-          }
-          
-          // Verify Payment logic
-          const params = new URLSearchParams(window.location.search);
-          const sessionId = params.get('session_id');
+        
+        // Verifica Pagamento Stripe (query params)
+        const params = new URLSearchParams(window.location.search);
+        const sessionId = params.get('session_id');
 
-          if (sessionId) {
-             addToast("Verificando pagamento...", "info");
-             try {
-               const verification = await stripeService.verifySession(sessionId);
-               if (verification.verified) {
-                 const updatedUser = await authService.refreshProfile();
-                 if (mounted) setCurrentUser(updatedUser);
-                 addToast("Pagamento confirmado! Plano atualizado.", "success");
-               }
-             } catch (err) {
-               console.error(err);
-             } finally {
-               window.history.replaceState({}, document.title, window.location.pathname);
-             }
-          }
-
-          if (mounted) setView(AppView.DASHBOARD);
+        if (sessionId) {
+            addToast("Verificando pagamento...", "info");
+            try {
+              const verification = await stripeService.verifySession(sessionId);
+              if (verification.verified) {
+                addToast("Pagamento confirmado! Plano atualizado.", "success");
+                // Força refresh do usuário após pagamento
+                const updatedUser = await authService.refreshProfile();
+                if (mounted && updatedUser) setCurrentUser(updatedUser);
+              }
+            } catch (err) {
+              console.error(err);
+            } finally {
+              // Limpa a URL
+              window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        } else if (mounted && user) {
+           setCurrentUser(user);
         }
+
+        if (mounted && (user || sessionId)) {
+          // Se temos usuário (ou estamos recuperando de um pagamento), carregamos os dados
+          await loadUserData(); 
+          setView(AppView.DASHBOARD);
+        }
+
       } catch (e) {
         console.error("Auth init error", e);
       } finally {
@@ -93,20 +92,37 @@ function App() {
           return prevLoading;
         });
       }
-    }, 4000); // 4 segundos timeout
+    }, 4000);
 
     // Listen to Supabase Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-       if (event === 'SIGNED_IN' && session) {
+       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
           if (mounted) {
-            // Apenas atualiza se já não estiver logado para evitar reload desnecessário
-            setCurrentUser(prev => prev?.id === session.user.id ? prev : { id: session.user.id, name: 'Carregando...', email: session.user.email || '', plan: 'free' });
+            // Lógica crítica: Só mostra "Carregando" se ainda não tivermos o usuário correto carregado.
+            // Isso evita o "flicker" ou sobrescrever um usuário já carregado com "Carregando..."
+            setCurrentUser(prev => {
+              if (prev && prev.id === session.user.id && prev.name !== 'Carregando...') {
+                return prev; // Mantém o usuário atual se já estiver carregado
+              }
+              return { 
+                id: session.user.id, 
+                name: prev?.name || 'Carregando...', 
+                email: session.user.email || '', 
+                plan: 'free' 
+              };
+            });
             
-            const user = await authService.getUserProfile(session.user.id);
-            setCurrentUser(user);
-            await loadUserData();
-            setView(AppView.DASHBOARD);
-            setLoading(false);
+            try {
+              const user = await authService.getUserProfile(session.user.id);
+              if (mounted) {
+                setCurrentUser(user);
+                await loadUserData();
+                setView(AppView.DASHBOARD);
+                setLoading(false);
+              }
+            } catch (error) {
+              console.error("Erro ao carregar perfil no AuthChange:", error);
+            }
           }
        } else if (event === 'SIGNED_OUT') {
           if (mounted) {
@@ -134,15 +150,18 @@ function App() {
       const data = await reportService.getAll();
       setReports(data);
       
-      setChatMessages([{
-        id: 'welcome',
-        role: 'model',
-        text: 'Olá. Sou seu assistente especialista em análise de evolução terapêutica. Analisei os relatórios do banco de dados. Como posso ajudar?',
-        timestamp: Date.now()
-      }]);
+      // Reinicia chat apenas se estiver vazio
+      setChatMessages(prev => {
+        if (prev.length > 0) return prev;
+        return [{
+          id: 'welcome',
+          role: 'model',
+          text: 'Olá. Sou seu assistente especialista em análise de evolução terapêutica. Analisei os relatórios do banco de dados. Como posso ajudar?',
+          timestamp: Date.now()
+        }];
+      });
     } catch (e) {
       console.error(e);
-      // Não joga erro para não quebrar o checkSession
     }
   };
 
