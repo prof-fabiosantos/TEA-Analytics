@@ -4,12 +4,13 @@ import * as pdfjsLib from 'pdfjs-dist';
 // Se 'GlobalWorkerOptions' não existir diretamente, tentamos acessar via '.default'
 const pdfLib = (pdfjsLib as any).default?.GlobalWorkerOptions ? (pdfjsLib as any).default : pdfjsLib;
 
-// Versão 3.11.174 - Estável para ambientes ESM/CDN (deve coincidir com index.html)
-const PDFJS_VERSION = '3.11.174';
+// Versão 4.0.379 - Deve coincidir EXATAMENTE com a versão instalada no package.json
+const PDFJS_VERSION = '4.0.379';
 
 // Configura o worker apenas se o objeto da biblioteca foi resolvido corretamente
 if (pdfLib.GlobalWorkerOptions) {
-  pdfLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+  // Nota: Versões 4.x geralmente usam .mjs para workers ES module
+  pdfLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
 } else {
   console.error("CRÍTICO: Não foi possível localizar GlobalWorkerOptions no pdfjs-dist. A extração de PDF falhará.");
 }
@@ -66,6 +67,10 @@ export const extractTextFromPdf = async (file: File): Promise<string> => {
     
     if (technicalMessage.includes("Password")) {
        throw new Error("O arquivo PDF está protegido por senha.");
+    }
+    
+    if (technicalMessage.includes("version") && technicalMessage.includes("match")) {
+       throw new Error(`Conflito de versão (Cache). Por favor, limpe o cache do navegador e recarregue.`);
     }
 
     throw new Error(`Falha técnica: ${technicalMessage}`);
