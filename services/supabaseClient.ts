@@ -1,19 +1,43 @@
 import { createClient } from '@supabase/supabase-js';
 
-// No Vite, a maneira correta e garantida de acessar variáveis VITE_ é via import.meta.env
-// Usamos uma string vazia como fallback para evitar crash imediato, mas validamos depois.
-let supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-let supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Função auxiliar para tentar pegar variável do import.meta.env de forma segura
+const getMetaEnv = (key: string) => {
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    // @ts-ignore
+    return import.meta.env[key];
+  }
+  return undefined;
+};
+
+// Tenta recuperar URL e KEY de várias fontes possíveis
+// A ordem é: import.meta.env (Vite) -> process.env (Define Plugin/Node) -> Fallbacks de nome
+const getSupabaseUrl = () => {
+  return getMetaEnv('VITE_SUPABASE_URL') || 
+         getMetaEnv('SUPABASE_URL') || 
+         process.env.VITE_SUPABASE_URL || 
+         process.env.SUPABASE_URL || 
+         '';
+};
+
+const getSupabaseKey = () => {
+  return getMetaEnv('VITE_SUPABASE_ANON_KEY') || 
+         getMetaEnv('SUPABASE_ANON_KEY') || 
+         getMetaEnv('SUPABASE_KEY') || 
+         process.env.VITE_SUPABASE_ANON_KEY || 
+         process.env.SUPABASE_ANON_KEY || 
+         '';
+};
+
+let supabaseUrl = getSupabaseUrl();
+let supabaseAnonKey = getSupabaseKey();
 
 // --- DEBUG LOG ---
-// Isso aparecerá no Console do navegador (F12) para confirmar o que está sendo carregado.
-console.log(`[Supabase Init] Tentando conectar...`);
-console.log(`[Supabase Init] URL definida: ${supabaseUrl ? supabaseUrl : '(VAZIO)'}`);
-console.log(`[Supabase Init] Key definida: ${supabaseAnonKey ? 'Sim (Oculta)' : '(VAZIO)'}`);
+console.log(`[Supabase Init] URL Length: ${supabaseUrl?.length || 0}`);
 // -----------------
 
 // CORREÇÃO AUTOMÁTICA: Se o usuário colocou a string de conexão do banco (postgresql://)
-if (supabaseUrl.startsWith('postgresql://')) {
+if (supabaseUrl && supabaseUrl.startsWith('postgresql://')) {
   console.warn("AVISO: Detectada string de conexão DB em VITE_SUPABASE_URL.");
   const match = supabaseUrl.match(/@db\.([a-z0-9]+)\.supabase\.co/);
   if (match && match[1]) {
@@ -22,19 +46,17 @@ if (supabaseUrl.startsWith('postgresql://')) {
   }
 }
 
-// Validação
 const isUrlPlaceholder = !supabaseUrl || supabaseUrl.includes('placeholder');
 const isKeyPlaceholder = !supabaseAnonKey || supabaseAnonKey.includes('placeholder');
 
-if (!supabaseUrl) {
-    console.error("ERRO CRÍTICO: VITE_SUPABASE_URL não encontrada. O app não conseguirá conectar.");
-    // Fallback para evitar crash do JS, mas a conexão falhará
-    supabaseUrl = 'https://placeholder.supabase.co';
+if (!supabaseUrl || isUrlPlaceholder) {
+    console.warn("AVISO CRÍTICO: VITE_SUPABASE_URL não encontrada ou inválida. O app usará placeholder (funcionalidade limitada).");
+    supabaseUrl = supabaseUrl || 'https://placeholder.supabase.co';
 }
 
-if (!supabaseAnonKey) {
-    console.error("ERRO CRÍTICO: VITE_SUPABASE_ANON_KEY não encontrada.");
-    supabaseAnonKey = 'placeholder-key';
+if (!supabaseAnonKey || isKeyPlaceholder) {
+    console.warn("AVISO CRÍTICO: VITE_SUPABASE_ANON_KEY não encontrada.");
+    supabaseAnonKey = supabaseAnonKey || 'placeholder-key';
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);

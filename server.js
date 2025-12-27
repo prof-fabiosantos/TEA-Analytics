@@ -7,12 +7,26 @@ import { createClient } from '@supabase/supabase-js';
 dotenv.config();
 
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
 
-// Inicializa Supabase Admin
+// --- CONFIGURAÇÃO E VERIFICAÇÃO DE CHAVES ---
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!stripeKey || stripeKey.includes('placeholder')) {
+  console.warn("⚠️ AVISO: STRIPE_SECRET_KEY não configurada. Pagamentos falharão.");
+}
+
+if (!supabaseServiceKey || supabaseServiceKey.includes('placeholder')) {
+  console.error("❌ ERRO CRÍTICO: SUPABASE_SERVICE_ROLE_KEY faltando no .env. O backend não conseguirá atualizar o plano do usuário.");
+}
+
+const stripe = new Stripe(stripeKey || 'sk_test_placeholder');
+
+// Inicializa Supabase Admin (Bypassa RLS)
 const supabaseAdmin = createClient(
-  process.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder'
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseServiceKey || 'placeholder'
 );
 
 app.use(cors());
@@ -40,14 +54,10 @@ app.post('/create-checkout-session', async (req, res) => {
     const selectedPlan = PLANS[planType];
     const configId = selectedPlan?.id || '';
 
-    // LÓGICA DE CORREÇÃO INTELIGENTE:
     let lineItem;
-
     if (configId.startsWith('price_')) {
-        // Caso Ideal: ID de Preço
         lineItem = { price: configId, quantity: 1 };
     } else {
-        // Fallback: ID de Produto (prod_) ou nada
         const productConfig = configId.startsWith('prod_') 
             ? { product: configId } 
             : { product_data: { name: selectedPlan.name } };
@@ -96,18 +106,33 @@ app.post('/verify-payment', async (req, res) => {
     if (session.payment_status === 'paid') {
       const planType = session.metadata?.planType || 'pro';
       const userId = session.metadata?.userId;
+      const userEmail = session.customer_email || session.customer_details?.email;
+
+      console.log(`Verificando pagamento para UserID: ${userId} (Email: ${userEmail}) - Plano: ${planType}`);
 
       if (userId) {
-        console.log(`Atualizando usuário ${userId} para plano ${planType}...`);
-        
-        const { error } = await supabaseAdmin
+        // 1. Tenta atualizar pelo ID
+        let { error, count } = await supabaseAdmin
           .from('profiles')
           .update({ plan: planType })
-          .eq('id', userId);
+          .eq('id', userId)
+          .select('id'); // Select para retornar count
+
+        // 2. Fallback: Se não achou pelo ID (banco recriado), tenta pelo Email
+        if ((!count && userEmail) || error) {
+            console.warn(`⚠️ Usuário não encontrado pelo ID ${userId}. Tentando fallback pelo email ${userEmail}...`);
+            const fallbackResult = await supabaseAdmin
+                .from('profiles')
+                .update({ plan: planType })
+                .eq('email', userEmail)
+                .select('id');
+            
+            error = fallbackResult.error;
+        }
 
         if (error) {
-           console.error("Erro ao atualizar DB:", error);
-           return res.status(500).json({ error: "Falha ao atualizar plano no banco de dados" });
+           console.error("❌ Erro ao atualizar DB:", error);
+           return res.status(500).json({ error: "Falha ao salvar no banco de dados. Contate suporte." });
         }
       }
       
@@ -126,4 +151,4 @@ app.post('/verify-payment', async (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => console.log(`Servidor de Pagamentos rodando em http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor backend rodando em http://localhost:${PORT}`));

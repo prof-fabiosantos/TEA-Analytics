@@ -29,7 +29,7 @@ function App() {
   const [authName, setAuthName] = useState('');
   const [authPassword, setAuthPassword] = useState(''); 
   const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false); // NOVO: Estado de loading do botão de auth
+  const [authLoading, setAuthLoading] = useState(false);
 
   // App Functional State
   const [isUploading, setIsUploading] = useState(false);
@@ -44,72 +44,70 @@ function App() {
 
     const checkSession = async () => {
       try {
-        // Verifica se Supabase está configurado antes de tentar conectar
         if (!isSupabaseConfigured()) {
             console.warn("Supabase não configurado. Pulando verificação de sessão.");
             return;
         }
 
-        // Tenta obter usuário atual
-        let user = await authService.getCurrentUser();
-        
-        // Verifica Pagamento Stripe (query params)
+        // Recupera params da URL
         const params = new URLSearchParams(window.location.search);
         const sessionId = params.get('session_id');
         const canceled = params.get('canceled');
 
-        if (canceled) {
-            addToast("Pagamento cancelado.", "info");
-            window.history.replaceState({}, document.title, window.location.pathname);
+        // Limpa URL imediatamente para evitar loops
+        if (sessionId || canceled) {
+           window.history.replaceState({}, document.title, window.location.pathname);
         }
 
+        if (canceled) {
+            addToast("Pagamento cancelado.", "info");
+        }
+
+        // Tenta buscar usuário atual (Sessão)
+        // Isso deve rodar independente do status do pagamento para garantir login
+        let user = await authService.getCurrentUser();
+
+        // Lógica de Pagamento
         if (sessionId) {
-            setPaymentProcessing(true); // Evita mostrar tela de login enquanto processa
-            
+            setPaymentProcessing(true);
             try {
+              // Verifica no backend
               const verification = await stripeService.verifySession(sessionId);
               
               if (verification.verified) {
                 addToast("Pagamento confirmado! Plano atualizado.", "success");
                 
-                // CRÍTICO: Se o usuário não estiver logado no state local, tenta recuperar
-                if (!user) {
-                   user = await authService.getCurrentUser();
-                }
-
+                // Força atualização local se o usuário já estiver carregado
                 if (user) {
-                    // ATUALIZAÇÃO OTIMISTA:
-                    const forcedUser: User = {
-                        ...user,
-                        plan: verification.plan // Usa o plano confirmado pelo Stripe
-                    };
-                    
+                    const forcedUser: User = { ...user, plan: verification.plan };
                     if (mounted) {
                         setCurrentUser(forcedUser);
-                        user = forcedUser; 
+                        user = forcedUser;
                     }
                 }
+              } else {
+                 // Pagamento não verificado, mas deixamos o usuário entrar como Free
+                 addToast("Status do pagamento pendente. Verifique seu plano em instantes.", "info");
               }
             } catch (err) {
-              console.error(err);
-              addToast("Erro ao verificar pagamento. Entre em contato com o suporte.", "error");
+              console.error("Erro verificação pagamento:", err);
+              addToast("Não foi possível confirmar o pagamento automaticamente. Entre em contato se o plano não atualizar.", "warning");
             } finally {
-              // Limpa a URL
-              window.history.replaceState({}, document.title, window.location.pathname);
               if (mounted) setPaymentProcessing(false);
             }
-        } else if (mounted && user) {
-           setCurrentUser(user);
-        }
+        } 
 
-        const activeUser = user || currentUser;
-        
-        if (mounted && activeUser) {
-          await loadUserData(); 
-          setView(AppView.DASHBOARD);
-        } else if (mounted && sessionId && !user) {
-            addToast("Pagamento recebido! Por favor, faça login novamente.", "success");
-            setView(AppView.LOGIN);
+        // Finaliza Setup
+        if (mounted) {
+            if (user) {
+                setCurrentUser(user);
+                await loadUserData();
+                setView(AppView.DASHBOARD);
+            } else if (sessionId) {
+                // Se pagou mas não achamos a sessão (browser diferente ou cookie perdido), pede login
+                addToast("Pagamento recebido! Faça login para acessar.", "success");
+                setView(AppView.LOGIN);
+            }
         }
 
       } catch (e) {
@@ -119,35 +117,25 @@ function App() {
       }
     };
 
-    // Failsafe
+    // Failsafe timer (caso checkSession trave muito)
     const timeoutTimer = setTimeout(() => {
-      if (mounted) setLoading(false);
+      if (mounted && loading) setLoading(false);
     }, 5000);
 
     // Listen to Supabase Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
           if (mounted) {
-            const hasVerifiedPlan = currentUser?.plan && currentUser.plan !== 'free';
-
-            if (!hasVerifiedPlan) {
-                try {
-                    const userProfile = await authService.getUserProfile(session.user.id);
-                    if (userProfile.name === 'Usuário' && session.user.user_metadata?.name) {
-                        userProfile.name = session.user.user_metadata.name;
-                    }
-                    if (mounted) setCurrentUser(userProfile);
-                } catch (error) {
-                    console.error("Erro perfil AuthChange:", error);
-                }
-            }
-            
-            await loadUserData();
-            if (view === AppView.LANDING || view === AppView.LOGIN || view === AppView.REGISTER) {
-                setView(AppView.DASHBOARD);
+            // Se já temos um usuário carregado e verificado, não sobrescrevemos desnecessariamente
+            // a menos que seja um login novo
+            if (!currentUser || event === 'SIGNED_IN') {
+                 const userProfile = await authService.getUserProfile(session.user.id);
+                 setCurrentUser(userProfile);
+                 await loadUserData();
+                 setView(AppView.DASHBOARD);
             }
             setLoading(false);
-            setAuthLoading(false); // Garante que o loading pare ao entrar
+            setAuthLoading(false);
           }
        } else if (event === 'SIGNED_OUT') {
           if (mounted) {
@@ -188,7 +176,7 @@ function App() {
         }];
       });
     } catch (e) {
-      console.error(e);
+      console.error("Erro carregando dados:", e);
     }
   };
 
@@ -206,32 +194,27 @@ function App() {
     setAuthLoading(true);
 
     try {
-      // Timeout de segurança: Se o login demorar mais de 15s (ex: problema de rede ou config errada), aborta.
-      const loginPromise = authService.loginWithPassword(authEmail, authPassword);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("O servidor demorou muito para responder. Verifique sua conexão.")), 15000)
-      );
-
-      await Promise.race([loginPromise, timeoutPromise]);
+      // O authService agora tem timeout interno no DB fetch.
+      // O loginAuth é rápido.
+      await authService.loginWithPassword(authEmail, authPassword);
       
       addToast("Login realizado com sucesso!", "success");
-      // O redirect acontece via onAuthStateChange, mas se falhar o listener, removemos loading aqui por segurança
-      // após um pequeno delay para dar tempo da transição
+      
+      // A mudança de estado acontece via onAuthStateChange listener
+      // Mas garantimos limpeza do loading aqui caso algo falhe
       setTimeout(() => {
-          setAuthLoading(false);
-      }, 2000);
+          if (authLoading) setAuthLoading(false);
+      }, 3000);
 
     } catch (err: any) {
       console.error("Login Error Details:", err);
       setAuthError(err.message || "Erro desconhecido ao tentar logar.");
       
-      // Mensagens amigáveis para erros comuns
       if (err.message?.includes('Invalid login credentials')) {
          addToast("Email ou senha incorretos.", "error");
       } else {
          addToast(err.message || "Falha no login.", "error");
       }
-      
       setAuthLoading(false);
     }
   };
@@ -250,15 +233,15 @@ function App() {
 
     try {
       const registerPromise = authService.register(authName, authEmail, authPassword);
+      // Timeout seguro para UI
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("O servidor demorou muito para responder.")), 15000)
+        setTimeout(() => reject(new Error("O servidor demorou muito para responder. Tente novamente.")), 30000)
       );
 
       await Promise.race([registerPromise, timeoutPromise]);
       
       addToast("Conta criada! Verifique seu email para confirmar antes de entrar.", "success");
       setAuthLoading(false);
-      // Opcional: Redirecionar para login ou avisar para checar email
     } catch (err: any) {
       console.error("Register Error Details:", err);
       setAuthError(err.message || "Erro ao criar conta.");
@@ -337,7 +320,6 @@ function App() {
       if (isPdf) {
         const text = await extractTextFromPdf(file);
         setNewReportContent(text);
-        // FIX: Removed unescaped slash from regex to prevent syntax errors
         setNewReportTitle(file.name.replace(/\.[^.]+$/, ""));
         addToast("PDF processado!", "success");
       } else {
@@ -345,7 +327,6 @@ function App() {
         reader.onload = (ev) => {
             const text = ev.target?.result as string;
             setNewReportContent(text || "");
-            // FIX: Removed unescaped slash from regex to prevent syntax errors
             setNewReportTitle(file.name.replace(/\.[^.]+$/, ""));
             setIsUploading(false);
         };

@@ -7,22 +7,19 @@ export default async function handler(req, res) {
     return res.status(405).end('Method Not Allowed');
   }
 
-  // Verificações de Segurança
-  if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: "Stripe Key missing in server config" });
-  }
-  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(500).json({ error: "Supabase credentials missing in server config" });
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!stripeKey) return res.status(500).json({ error: "Server Config Error: Missing Stripe Key" });
+  if (!supabaseUrl || !supabaseServiceKey) {
+      console.error("CRÍTICO: Faltando SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente da Vercel/Server.");
+      return res.status(500).json({ error: "Server Config Error: Missing Database Credentials" });
   }
 
   try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-    
-    // Inicializa cliente Supabase com privilégios de Admin (Service Role)
-    const supabaseAdmin = createClient(
-      process.env.VITE_SUPABASE_URL, 
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
+    const stripe = new Stripe(stripeKey);
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     const { sessionId } = req.body;
 
@@ -35,17 +32,31 @@ export default async function handler(req, res) {
     if (session.payment_status === 'paid') {
       const planType = session.metadata?.planType || 'pro';
       const userId = session.metadata?.userId;
+      const userEmail = session.customer_email || session.customer_details?.email;
 
       if (userId) {
-        // Atualiza o banco de dados diretamente
-        const { error } = await supabaseAdmin
+        // 1. Tenta atualizar pelo ID
+        let { error, data } = await supabaseAdmin
           .from('profiles')
           .update({ plan: planType })
-          .eq('id', userId);
+          .eq('id', userId)
+          .select();
+
+        // 2. Fallback por Email se o ID não bater (ex: banco resetado)
+        if ((!data || data.length === 0) && userEmail) {
+            console.log(`Vercel: ID ${userId} não encontrado. Tentando update por email ${userEmail}`);
+            const fallback = await supabaseAdmin
+                .from('profiles')
+                .update({ plan: planType })
+                .eq('email', userEmail)
+                .select();
+            
+            error = fallback.error;
+        }
 
         if (error) {
-           console.error("Failed to update profile DB:", error);
-           return res.status(500).json({ error: "DB update failed" });
+           console.error("DB Update Failed:", error);
+           return res.status(500).json({ error: "Database update failed" });
         }
       }
       
