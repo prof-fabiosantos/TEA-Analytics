@@ -19,17 +19,12 @@ export default async function handler(req, res) {
     const { planType, userEmail, userId } = req.body;
 
     // Determina a URL base. 
-    // 1. Tenta usar CLIENT_URL definida nas env vars (Recomendado para Prod).
-    // 2. Se não, usa VERCEL_URL (gerada automaticamente pelo Vercel), adicionando https://.
-    // 3. Fallback para localhost.
     let domain = process.env.CLIENT_URL;
     if (!domain) {
       domain = process.env.VERCEL_URL 
         ? `https://${process.env.VERCEL_URL}` 
         : 'http://localhost:5173';
     }
-    
-    // Remove slash final se existir para evitar duplicação na URL
     domain = domain.replace(/\/$/, "");
 
     const PLANS = {
@@ -44,8 +39,14 @@ export default async function handler(req, res) {
     };
     
     const selectedPlan = PLANS[planType];
-    const priceId = selectedPlan?.priceId;
+    const rawPriceId = selectedPlan?.priceId;
     const planName = selectedPlan?.name || 'Assinatura TEA Analytics';
+
+    // CORREÇÃO DE ERRO COMUM:
+    // O usuário muitas vezes copia o "Product ID" (prod_...) em vez do "Price ID" (price_...).
+    // O Stripe falha se passarmos um ID de produto onde ele espera um preço.
+    // Se o ID não começar com 'price_', ignoramos e usamos a criação dinâmica de preço (fallback).
+    const useExplicitPrice = rawPriceId && rawPriceId.startsWith('price_');
 
     // Validação básica
     if (!userEmail || !userId) {
@@ -55,25 +56,29 @@ export default async function handler(req, res) {
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
-        {
-          // Se tivermos um ID de preço real configurado no Vercel, usamos ele.
-          // Caso contrário, criamos um preço dinâmico (útil se as chaves não estiverem configuradas ainda)
-          ...(priceId && !priceId.includes('REPLACE') 
-            ? { price: priceId } 
-            : {
+        useExplicitPrice
+          ? { 
+              price: rawPriceId, 
+              quantity: 1 
+            }
+          : {
+              // Fallback: Se não houver ID de preço válido, configuramos manualmente
               price_data: {
                 currency: 'brl',
                 product_data: {
                   name: planName,
+                  description: planType === 'semester' ? 'Cobrança semestral' : 'Cobrança mensal'
                 },
-                unit_amount: planType === 'pro' ? 2000 : 11000, // Fallback values
+                unit_amount: planType === 'pro' ? 2000 : 11000, 
+                recurring: {
+                  interval: 'month',
+                  interval_count: planType === 'semester' ? 6 : 1
+                }
               },
+              quantity: 1,
             }
-          ),
-          quantity: 1,
-        },
       ],
-      mode: 'payment', 
+      mode: 'subscription', // Mudado para subscription para garantir recorrência
       success_url: `${domain}/?payment_success=true&plan=${planType}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${domain}/?canceled=true`,
       customer_email: userEmail,

@@ -6,17 +6,10 @@ import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
-// INSTRUÇÕES DE CONFIGURAÇÃO:
-// 1. Crie um arquivo .env na raiz
-// 2. Adicione: STRIPE_SECRET_KEY=sk_test_...
-// 3. Adicione: SUPABASE_SERVICE_ROLE_KEY=... (Para atualizar o plano do usuário)
-// 4. Adicione: VITE_SUPABASE_URL=...
-// 5. Rode: node server.js
-
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
 
-// Inicializa Supabase Admin para atualizar o banco de dados ignorando RLS
+// Inicializa Supabase Admin
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co',
   process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder'
@@ -38,34 +31,41 @@ const PLANS = {
   }
 };
 
-// Rota 1: Criar Sessão de Checkout
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planType, userEmail, userId } = req.body;
     
-    const priceId = PLANS[planType]?.priceId;
-    const planName = PLANS[planType]?.name || 'Assinatura TEA Analytics';
+    const selectedPlan = PLANS[planType];
+    const rawPriceId = selectedPlan?.priceId;
+    const planName = selectedPlan?.name || 'Assinatura TEA Analytics';
+
+    // Validação: Só usa o ID se começar com 'price_', senão usa fallback
+    const useExplicitPrice = rawPriceId && rawPriceId.startsWith('price_');
 
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
-        {
-          ...(priceId && !priceId.includes('REPLACE') 
-            ? { price: priceId } 
-            : {
+        useExplicitPrice
+          ? { 
+              price: rawPriceId, 
+              quantity: 1 
+            }
+          : {
               price_data: {
                 currency: 'brl',
                 product_data: {
                   name: planName,
                 },
                 unit_amount: planType === 'pro' ? 2000 : 11000, 
+                recurring: {
+                  interval: 'month',
+                  interval_count: planType === 'semester' ? 6 : 1
+                }
               },
+              quantity: 1,
             }
-          ),
-          quantity: 1,
-        },
       ],
-      mode: 'payment', 
+      mode: 'subscription', 
       success_url: `${DOMAIN}/?payment_success=true&plan=${planType}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${DOMAIN}/?canceled=true`,
       customer_email: userEmail,
@@ -83,7 +83,6 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// Rota 2: Verificar Pagamento e Atualizar Banco
 app.post('/verify-payment', async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -101,7 +100,6 @@ app.post('/verify-payment', async (req, res) => {
       if (userId) {
         console.log(`Atualizando usuário ${userId} para plano ${planType}...`);
         
-        // Atualiza o banco de dados via Supabase Admin
         const { error } = await supabaseAdmin
           .from('profiles')
           .update({ plan: planType })
