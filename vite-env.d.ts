@@ -1,2 +1,9 @@
-// This file is intentionally left empty to avoid "Cannot find type definition file for 'vite/client'" error.
-// The API key is now accessed via process.env.API_KEY.
+interface ImportMetaEnv {
+  readonly VITE_SUPABASE_URL: string;
+  readonly VITE_SUPABASE_ANON_KEY: string;
+  readonly [key: string]: any;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}

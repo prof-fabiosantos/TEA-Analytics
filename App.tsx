@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { v4 as uuidv4 } from 'uuid'; 
 import { AppView, Report, User, ChatMessage } from './types';
 import { ReportList } from './components/ReportList';
 import { EvolutionChart } from './components/EvolutionChart';
@@ -7,12 +6,12 @@ import { ChatInterface } from './components/ChatInterface';
 import { Button } from './components/Button';
 import { extractTextFromPdf } from './services/pdfService';
 import { authService } from './services/authService';
-import { stripeService } from './services/stripeService'; // Import stripeService
+import { reportService } from './services/reportService';
+import { stripeService } from './services/stripeService';
 import { LandingPage } from './components/LandingPage';
 import { Plans } from './components/Plans';
 import { useToast } from './contexts/ToastContext';
-
-const STORAGE_KEY_PREFIX = 'ta_reports_';
+import { supabase } from './services/supabaseClient';
 
 function App() {
   const { addToast } = useToast();
@@ -27,6 +26,7 @@ function App() {
   // Auth Form State
   const [authEmail, setAuthEmail] = useState('');
   const [authName, setAuthName] = useState('');
+  const [authPassword, setAuthPassword] = useState(''); // Added password state
   const [authError, setAuthError] = useState('');
 
   // App Functional State
@@ -37,39 +37,34 @@ function App() {
   const [newReportType, setNewReportType] = useState<Report['type']>('ABA');
   const [newReportContent, setNewReportContent] = useState('');
 
-  // Initial Auth Check and Stripe Redirect Handler
+  // 1. Initial Auth Check
   useEffect(() => {
-    const initApp = async () => {
+    const checkSession = async () => {
       try {
-        const user = authService.getCurrentUser();
+        const user = await authService.getCurrentUser();
         if (user) {
           setCurrentUser(user);
+          await loadUserData(); // Fetch reports
           
-          // CHECK FOR STRIPE SUCCESS REDIRECT (SECURE VERIFICATION)
+          // Verify Payment logic
           const params = new URLSearchParams(window.location.search);
           const sessionId = params.get('session_id');
 
           if (sessionId) {
-             // Show immediate feedback to user
              addToast("Verificando pagamento...", "info");
-             
              try {
-               // Verify with backend
                const verification = await stripeService.verifySession(sessionId);
-               
-               if (verification.verified && verification.plan) {
-                 const newPlan = verification.plan as 'pro' | 'semester';
-                 const updatedUser = authService.updatePlan(user.id, newPlan);
+               if (verification.verified) {
+                 // Refresh user profile to get new plan
+                 const updatedUser = await authService.refreshProfile();
                  setCurrentUser(updatedUser);
-                 addToast("Pagamento confirmado! Seu plano foi atualizado.", "success");
+                 addToast("Pagamento confirmado! Plano atualizado.", "success");
                } else {
-                 addToast("Pagamento não confirmado ou pendente.", "warning");
+                 addToast("Pagamento pendente ou não confirmado.", "warning");
                }
              } catch (err) {
-               console.error("Payment verification failed", err);
-               addToast("Erro ao verificar pagamento.", "error");
+               console.error(err);
              } finally {
-               // Clean URL to prevent re-verification loops
                window.history.replaceState({}, document.title, window.location.pathname);
              }
           }
@@ -78,61 +73,51 @@ function App() {
         }
       } catch (e) {
         console.error("Auth init error", e);
-        addToast("Erro ao carregar sessão.", "error");
       } finally {
         setLoading(false);
       }
     };
+
+    // Listen to Supabase Auth Changes (Login/Logout)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+       if (event === 'SIGNED_IN' && session) {
+          const user = await authService.getUserProfile(session.user.id);
+          setCurrentUser(user);
+          await loadUserData();
+          setView(AppView.DASHBOARD);
+       } else if (event === 'SIGNED_OUT') {
+          setCurrentUser(null);
+          setReports([]);
+          setChatMessages([]);
+          setView(AppView.LANDING);
+       }
+    });
     
-    initApp();
+    checkSession();
+
+    return () => {
+      subscription.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Multi-tenant Data Loading: Load reports specific to the USER ID
-  useEffect(() => {
-    if (!currentUser) {
-      setReports([]);
-      setChatMessages([]);
-      return;
-    }
-
-    const userStorageKey = `${STORAGE_KEY_PREFIX}${currentUser.id}`;
-    const saved = localStorage.getItem(userStorageKey);
-    if (saved) {
-      try {
-        setReports(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse reports", e);
-        addToast("Erro ao carregar seus relatórios salvos.", "error");
-      }
-    } else {
-      setReports([]);
-    }
-
-    // Initialize chat if empty
-    if (chatMessages.length === 0) {
+  const loadUserData = async () => {
+    try {
+      const data = await reportService.getAll();
+      setReports(data);
+      
+      // Reset Chat
       setChatMessages([{
         id: 'welcome',
         role: 'model',
-        text: 'Olá. Sou seu assistente especialista em análise de evolução terapêutica. Analisei os relatórios enviados. Como posso ajudar você hoje a entender melhor a evolução ou planejar ações futuras?',
+        text: 'Olá. Sou seu assistente especialista em análise de evolução terapêutica. Analisei os relatórios do banco de dados. Como posso ajudar?',
         timestamp: Date.now()
       }]);
+    } catch (e) {
+      console.error(e);
+      addToast("Erro ao carregar dados.", "error");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser]);
-
-  // Persistence: Save to User specific key
-  useEffect(() => {
-    if (currentUser && reports.length >= 0) {
-       const userStorageKey = `${STORAGE_KEY_PREFIX}${currentUser.id}`;
-       try {
-         localStorage.setItem(userStorageKey, JSON.stringify(reports));
-       } catch (e) {
-         addToast("Falha ao salvar dados localmente (Quota excedida?)", "warning");
-       }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports, currentUser]);
+  };
 
   // --- Auth Handlers ---
 
@@ -140,13 +125,13 @@ function App() {
     e.preventDefault();
     setAuthError('');
     try {
-      const user = await authService.login(authEmail);
-      setCurrentUser(user);
-      setView(AppView.DASHBOARD);
-      addToast(`Bem-vindo de volta, ${user.name}!`, "success");
+      // Trying password login first
+      await authService.loginWithPassword(authEmail, authPassword);
+      // State update happens in onAuthStateChange
+      addToast("Login realizado com sucesso!", "success");
     } catch (err) {
       setAuthError((err as Error).message);
-      addToast((err as Error).message, "error");
+      addToast("Falha no login. Verifique email/senha.", "error");
     }
   };
 
@@ -154,219 +139,161 @@ function App() {
     e.preventDefault();
     setAuthError('');
     try {
-      const user = await authService.register(authName, authEmail);
-      setCurrentUser(user);
-      setView(AppView.DASHBOARD);
-      addToast("Conta criada com sucesso!", "success");
+      await authService.register(authName, authEmail, authPassword);
+      addToast("Conta criada! Verifique seu email para confirmar.", "success");
+      // Supabase usually requires email confirmation or auto-login depending on settings
     } catch (err) {
       setAuthError((err as Error).message);
       addToast((err as Error).message, "error");
     }
   };
 
-  const handleLogout = () => {
-    authService.logout();
-    setCurrentUser(null);
-    setView(AppView.LANDING);
-    setReports([]);
-    setChatMessages([]);
+  const handleLogout = async () => {
+    await authService.logout();
     addToast("Você saiu da conta.", "info");
   };
 
   const handlePlanUpdate = (plan: 'free' | 'pro' | 'semester') => {
-    if (!currentUser) return;
-    const updatedUser = authService.updatePlan(currentUser.id, plan);
-    setCurrentUser(updatedUser);
-    
-    let planName = 'Básico';
-    if (plan === 'pro') planName = 'Profissional (Mensal)';
-    if (plan === 'semester') planName = 'Econômico (Semestral)';
-
-    addToast(`Plano atualizado para: ${planName}`, "success");
-    setView(AppView.DASHBOARD);
+    // This function is just for UI updates optimistically in some apps, 
+    // but here we rely on the payment flow returning to the app to update the DB.
+    // However, if manual update needed:
+    // authService.updatePlan(currentUser.id, plan); // Not implemented client side securely
+    console.log("Plan selection initiated", plan);
   };
 
   // --- App Logic ---
 
-  const handleAddReport = (e: React.FormEvent) => {
+  const handleAddReport = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // GATING: Check limits for free plan
     const isFree = currentUser?.plan === 'free';
     if (isFree && reports.length >= 3) {
-      addToast("Limite do plano Grátis atingido (3 relatórios). Faça upgrade!", "warning");
+      addToast("Limite do plano Grátis atingido. Faça upgrade!", "warning");
       setView(AppView.PLANS);
       return;
     }
 
     if (!newReportTitle || !newReportDate || !newReportContent) {
-      addToast("Preencha todos os campos obrigatórios.", "error");
+      addToast("Preencha todos os campos.", "error");
       return;
     }
 
-    const newReport: Report = {
-      id: uuidv4(),
-      title: newReportTitle,
-      date: newReportDate,
-      type: newReportType,
-      content: newReportContent
-    };
+    try {
+      setIsUploading(true);
+      const newReport = await reportService.create({
+        title: newReportTitle,
+        date: newReportDate,
+        type: newReportType,
+        content: newReportContent
+      });
 
-    setReports([...reports, newReport]);
-    setNewReportTitle('');
-    setNewReportDate('');
-    setNewReportContent('');
-    setView(AppView.DASHBOARD);
-    addToast("Relatório salvo com sucesso!", "success");
+      setReports([newReport, ...reports]); // Add to top
+      setNewReportTitle('');
+      setNewReportDate('');
+      setNewReportContent('');
+      setView(AppView.DASHBOARD);
+      addToast("Relatório salvo na nuvem!", "success");
+    } catch (e) {
+      addToast("Erro ao salvar relatório.", "error");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate File Size (Max 5MB)
     if (file.size > 5 * 1024 * 1024) {
-      addToast("O arquivo é muito grande (Máx 5MB).", "error");
+      addToast("Arquivo muito grande (Máx 5MB).", "error");
       return;
     }
 
     setIsUploading(true);
-    setNewReportContent("Processando arquivo, aguarde...");
+    setNewReportContent("Processando arquivo...");
 
     try {
       if (file.type === 'application/pdf') {
         const text = await extractTextFromPdf(file);
-        if (!text || text.trim().length < 10) {
-           throw new Error("Não foi possível extrair texto legível deste PDF.");
-        }
+        if (!text || text.trim().length < 10) throw new Error("PDF sem texto legível.");
         setNewReportContent(text);
         setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
-        addToast("PDF processado com sucesso!", "success");
+        addToast("PDF processado!", "success");
       } else {
         const reader = new FileReader();
-        reader.onload = (event) => {
-          const text = event.target?.result as string;
-          setNewReportContent(text);
-          setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
-          setIsUploading(false);
-          addToast("Arquivo de texto carregado!", "success");
-        };
-        reader.onerror = () => {
-          addToast("Erro ao ler arquivo de texto.", "error");
-          setIsUploading(false);
+        reader.onload = (ev) => {
+            setNewReportContent(ev.target?.result as string);
+            setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
+            setIsUploading(false);
         };
         reader.readAsText(file);
-        return; 
+        return;
       }
     } catch (error) {
-      console.error(error);
-      const msg = error instanceof Error ? error.message : "Erro desconhecido";
-      addToast(`Erro no upload: ${msg}`, "error");
+      addToast("Erro no upload.", "error");
       setNewReportContent("");
     } finally {
-      if (file.type === 'application/pdf') {
-        setIsUploading(false);
-      }
-      // Reset input so same file can be selected again if needed
+      if (file.type === 'application/pdf') setIsUploading(false);
       e.target.value = '';
     }
   };
 
-  const handleDeleteReport = (id: string) => {
-    if (window.confirm('Tem certeza que deseja excluir este relatório?')) {
-      setReports(reports.filter(r => r.id !== id));
-      addToast("Relatório removido.", "info");
+  const handleDeleteReport = async (id: string) => {
+    if (window.confirm('Excluir este relatório?')) {
+      try {
+        await reportService.delete(id);
+        setReports(reports.filter(r => r.id !== id));
+        addToast("Relatório removido.", "info");
+      } catch (e) {
+        addToast("Erro ao excluir.", "error");
+      }
     }
   };
 
-  // --- Data Management ---
+  // --- Data Management (Local JSON export still useful) ---
   const handleExportData = () => {
-    try {
       const dataStr = JSON.stringify(reports, null, 2);
       const blob = new Blob([dataStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `tea-analytics-backup-${currentUser?.name || 'user'}-${new Date().toISOString().slice(0, 10)}.json`;
+      link.download = `backup-${new Date().toISOString().slice(0,10)}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      addToast("Backup gerado com sucesso!", "success");
-    } catch (e) {
-      addToast("Erro ao gerar backup.", "error");
-    }
   };
-
-  const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const importedReports = JSON.parse(event.target?.result as string);
-        if (Array.isArray(importedReports)) {
-          if (window.confirm(`Isso substituirá seus relatórios atuais por ${importedReports.length} novos. Deseja continuar?`)) {
-            setReports(importedReports);
-            addToast("Dados restaurados com sucesso!", "success");
-          }
-        } else {
-          throw new Error("Formato inválido");
-        }
-      } catch (err) {
-        addToast("Arquivo de backup inválido ou corrompido.", "error");
-      }
-      if (importInputRef.current) importInputRef.current.value = '';
-    };
-    reader.readAsText(file);
-  };
-
-  const handleClearData = () => {
-    if (window.confirm('ATENÇÃO: Isso apagará todos os relatórios cadastrados. Deseja continuar?')) {
-      setReports([]);
-      addToast("Todos os dados foram limpos.", "warning");
-    }
-  };
-
-  // --- Render Views ---
 
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
-      <div className="text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600 mx-auto mb-4"></div>
-        <p className="text-gray-500">Iniciando aplicação...</p>
-      </div>
+      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
     </div>
   );
 
-  // PUBLIC VIEWS
+  // AUTH VIEWS
   if (!currentUser) {
     if (view === AppView.LOGIN) {
       return (
         <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
           <div className="sm:mx-auto sm:w-full sm:max-w-md">
-             <div className="flex justify-center mb-6">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-teal-600 rounded-lg flex items-center justify-center text-white font-bold">TA</div>
-                  <span className="text-xl font-bold text-teal-900">TEA Analytics</span>
-                </div>
-             </div>
-             <h2 className="mt-2 text-center text-3xl font-extrabold text-gray-900">Entre na sua conta</h2>
+             <h2 className="text-center text-3xl font-extrabold text-gray-900">Login</h2>
           </div>
           <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
             <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
               <form onSubmit={handleLogin} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Email</label>
-                  <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-teal-500 focus:border-teal-500"/>
+                  <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
-                {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Senha</label>
+                  <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
+                </div>
+                {authError && <p className="text-red-500 text-sm">{authError}</p>}
                 <Button type="submit" className="w-full">Entrar</Button>
               </form>
               <div className="mt-6 text-center">
-                 <button onClick={() => setView(AppView.REGISTER)} className="text-sm text-teal-600 hover:text-teal-500">Não tem conta? Cadastre-se</button>
-                 <br />
-                 <button onClick={() => setView(AppView.LANDING)} className="mt-2 text-sm text-gray-500">Voltar</button>
+                 <button onClick={() => setView(AppView.REGISTER)} className="text-sm text-teal-600">Criar conta</button>
+                 <br/><button onClick={() => setView(AppView.LANDING)} className="text-sm text-gray-500 mt-2">Voltar</button>
               </div>
             </div>
           </div>
@@ -376,33 +303,30 @@ function App() {
     if (view === AppView.REGISTER) {
       return (
         <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-          <div className="sm:mx-auto sm:w-full sm:max-w-md">
-             <div className="flex justify-center mb-6">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-teal-600 rounded-lg flex items-center justify-center text-white font-bold">TA</div>
-                  <span className="text-xl font-bold text-teal-900">TEA Analytics</span>
-                </div>
-             </div>
-             <h2 className="mt-2 text-center text-3xl font-extrabold text-gray-900">Crie sua conta</h2>
+           <div className="sm:mx-auto sm:w-full sm:max-w-md">
+             <h2 className="text-center text-3xl font-extrabold text-gray-900">Cadastro</h2>
           </div>
           <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
             <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
               <form onSubmit={handleRegister} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Nome</label>
-                  <input type="text" required value={authName} onChange={e => setAuthName(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-teal-500 focus:border-teal-500"/>
+                  <input type="text" required value={authName} onChange={e => setAuthName(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Email</label>
-                  <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:ring-teal-500 focus:border-teal-500"/>
+                  <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
-                {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
-                <Button type="submit" className="w-full">Criar Conta</Button>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Senha</label>
+                  <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
+                </div>
+                {authError && <p className="text-red-500 text-sm">{authError}</p>}
+                <Button type="submit" className="w-full">Cadastrar</Button>
               </form>
-              <div className="mt-6 text-center">
-                 <button onClick={() => setView(AppView.LOGIN)} className="text-sm text-teal-600 hover:text-teal-500">Já tem conta? Entre</button>
-                 <br />
-                 <button onClick={() => setView(AppView.LANDING)} className="mt-2 text-sm text-gray-500">Voltar</button>
+               <div className="mt-6 text-center">
+                 <button onClick={() => setView(AppView.LOGIN)} className="text-sm text-teal-600">Já tem conta? Entre</button>
+                 <br/><button onClick={() => setView(AppView.LANDING)} className="text-sm text-gray-500 mt-2">Voltar</button>
               </div>
             </div>
           </div>
@@ -412,180 +336,102 @@ function App() {
     return <LandingPage onLogin={() => setView(AppView.LOGIN)} onRegister={() => setView(AppView.REGISTER)} />;
   }
 
-  // PROTECTED VIEWS (Rendered inside Layout)
+  // DASHBOARD CONTENT RENDERER
   const renderDashboardContent = () => {
     switch (view) {
       case AppView.UPLOAD:
-        // Logic to check limit for free users
         const isFreeUser = currentUser?.plan === 'free';
-        const usageCount = reports.length;
-        const freeLimit = 3;
-        const limitReached = isFreeUser && usageCount >= freeLimit;
-
+        const limitReached = isFreeUser && reports.length >= 3;
+        
         return (
-          <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-md border border-gray-200 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800">Adicionar Novo Relatório</h2>
-              <Button variant="outline" size="sm" onClick={() => setView(AppView.DASHBOARD)}>Cancelar</Button>
-            </div>
-
-            {limitReached ? (
-              <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-300">
-                <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-orange-100 mb-4">
-                  <svg className="h-6 w-6 text-orange-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg leading-6 font-medium text-gray-900">Limite Atingido</h3>
-                <p className="mt-2 text-sm text-gray-500 max-w-sm mx-auto">
-                  Você já utilizou seus {freeLimit} relatórios gratuitos. Faça o upgrade para o plano Profissional para enviar relatórios ilimitados.
-                </p>
-                <div className="mt-6 flex justify-center gap-3">
-                  <Button onClick={() => setView(AppView.PLANS)} className="bg-gradient-to-r from-teal-500 to-teal-600">
-                    Fazer Upgrade Agora
-                  </Button>
-                  <Button variant="outline" onClick={() => setView(AppView.DASHBOARD)}>
-                    Voltar
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {isFreeUser && (
-                  <div className="mb-6">
-                    <div className="flex justify-between text-sm font-medium mb-1">
-                      <span className="text-gray-500">Uso do Plano Grátis</span>
-                      <span className={`${usageCount >= freeLimit ? 'text-red-600' : 'text-teal-600'}`}>
-                        {usageCount} / {freeLimit} relatórios
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2.5">
-                      <div 
-                        className="bg-teal-600 h-2.5 rounded-full transition-all duration-500" 
-                        style={{ width: `${(usageCount / freeLimit) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                )}
-                
+          <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-md animate-fade-in">
+             <div className="flex justify-between mb-4">
+                <h2 className="text-xl font-bold">Novo Relatório</h2>
+                <Button variant="outline" size="sm" onClick={() => setView(AppView.DASHBOARD)}>Cancelar</Button>
+             </div>
+             {limitReached ? (
+               <div className="text-center py-10 bg-gray-50 border border-dashed rounded-xl">
+                 <h3 className="text-lg font-medium text-gray-900">Limite Atingido (3/3)</h3>
+                 <p className="text-sm text-gray-500 mb-4">Faça upgrade para continuar.</p>
+                 <Button onClick={() => setView(AppView.PLANS)}>Ver Planos</Button>
+               </div>
+             ) : (
                 <form onSubmit={handleAddReport} className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Título do Relatório</label>
-                      <input type="text" required value={newReportTitle} onChange={e => setNewReportTitle(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Data</label>
-                      <input type="date" required value={newReportDate} onChange={e => setNewReportDate(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
-                    </div>
+                  <div className="grid grid-cols-2 gap-4">
+                     <div>
+                       <label className="text-sm font-medium block">Título</label>
+                       <input className="w-full border p-2 rounded" value={newReportTitle} onChange={e=>setNewReportTitle(e.target.value)} required />
+                     </div>
+                     <div>
+                       <label className="text-sm font-medium block">Data</label>
+                       <input type="date" className="w-full border p-2 rounded" value={newReportDate} onChange={e=>setNewReportDate(e.target.value)} required />
+                     </div>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
-                    <select value={newReportType} onChange={e => setNewReportType(e.target.value as Report['type'])} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500">
+                    <label className="text-sm font-medium block">Tipo</label>
+                    <select className="w-full border p-2 rounded" value={newReportType} onChange={e=>setNewReportType(e.target.value as any)}>
                       <option value="ABA">ABA</option>
                       <option value="Fonoaudiologia">Fonoaudiologia</option>
-                      <option value="Terapia Ocupacional">Terapia Ocupacional</option>
+                      <option value="Terapia Ocupacional">T.O.</option>
                       <option value="Escolar">Escolar</option>
                       <option value="Outro">Outro</option>
                     </select>
                   </div>
                   <div>
-                    <div className="mb-2 p-3 bg-blue-50 rounded-lg border border-blue-100 flex items-center justify-between">
-                      <span className="text-sm text-blue-700">Arquivo (.txt, .pdf)?</span>
-                      <label className={`cursor-pointer bg-white text-blue-600 px-3 py-1 rounded border border-blue-200 text-sm hover:bg-blue-50 transition-colors ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
-                        {isUploading ? 'Lendo...' : 'Upload'}
-                        <input type="file" accept=".txt,.md,.json,.pdf" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-sm font-medium">Conteúdo</label>
+                      <label className="text-xs text-blue-600 cursor-pointer">
+                        Upload PDF/Txt <input type="file" className="hidden" onChange={handleFileUpload} accept=".pdf,.txt" disabled={isUploading}/>
                       </label>
                     </div>
-                    <textarea required rows={10} value={newReportContent} onChange={e => setNewReportContent(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 font-mono text-sm" placeholder="Conteúdo do relatório..."/>
+                    <textarea className="w-full border p-2 rounded h-40" value={newReportContent} onChange={e=>setNewReportContent(e.target.value)} required placeholder="Cole o texto ou faça upload..."></textarea>
                   </div>
-                  <div className="pt-4 flex justify-end">
-                    <Button type="submit" size="lg" disabled={isUploading}>Salvar Relatório</Button>
+                  <div className="flex justify-end">
+                    <Button type="submit" disabled={isUploading}>{isUploading ? 'Salvando...' : 'Salvar Relatório'}</Button>
                   </div>
                 </form>
-              </>
-            )}
+             )}
           </div>
         );
       case AppView.CHAT:
         return (
           <div className="max-w-4xl mx-auto animate-fade-in">
-            <div className="mb-4 flex items-center justify-between">
-               <h2 className="text-xl font-bold text-gray-800">Assistente de Evolução</h2>
-               <Button variant="outline" size="sm" onClick={() => setView(AppView.DASHBOARD)}>Voltar</Button>
+            <div className="flex justify-between mb-4">
+              <h2 className="text-xl font-bold">Assistente IA</h2>
+              <Button variant="outline" size="sm" onClick={() => setView(AppView.DASHBOARD)}>Voltar</Button>
             </div>
-            <ChatInterface 
-              reports={reports} 
-              messages={chatMessages} 
-              setMessages={setChatMessages} 
-            />
+            <ChatInterface reports={reports} messages={chatMessages} setMessages={setChatMessages} />
           </div>
         );
       case AppView.PLANS:
-        return (
-          <div className="animate-fade-in">
-            <Plans 
-              currentUser={currentUser} 
-              onSelectPlan={handlePlanUpdate} 
-              onCancel={() => setView(AppView.DASHBOARD)} 
-            />
-          </div>
-        );
-      case AppView.DASHBOARD:
+        return <Plans currentUser={currentUser} onSelectPlan={handlePlanUpdate} onCancel={() => setView(AppView.DASHBOARD)} />;
       default:
         return (
-          <div className="space-y-8 max-w-6xl mx-auto pb-10 animate-fade-in">
-             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-8 max-w-6xl mx-auto animate-fade-in">
+             <div className="flex justify-between items-center">
                <div>
-                 <h2 className="text-2xl font-bold text-gray-900">Olá, {currentUser.name}</h2>
-                 <p className="text-gray-500">
-                   Plano: <span className="font-semibold text-teal-600 uppercase">
-                     {currentUser.plan === 'semester' ? 'Econômico' : currentUser.plan === 'pro' ? 'Profissional' : 'Básico'}
-                   </span>
-                 </p>
+                 <h2 className="text-2xl font-bold">Olá, {currentUser.name}</h2>
+                 <p className="text-gray-500 text-sm">Plano: <span className="font-bold uppercase text-teal-600">{currentUser.plan}</span></p>
                </div>
-               <div className="flex gap-3">
-                 <Button onClick={() => setView(AppView.UPLOAD)}>Adicionar Relatório</Button>
-                 <Button variant="secondary" onClick={() => setView(AppView.CHAT)}>Consultar IA</Button>
+               <div className="flex gap-2">
+                 <Button onClick={() => setView(AppView.UPLOAD)}>+ Relatório</Button>
+                 <Button variant="secondary" onClick={() => setView(AppView.CHAT)}>IA Chat</Button>
                </div>
              </div>
-
-             {/* BANNER FOR FREE USERS */}
+             
              {currentUser.plan === 'free' && (
-               <div className="bg-orange-50 border-l-4 border-orange-400 p-4 rounded shadow-sm">
-                 <div className="flex justify-between items-center">
-                   <div className="flex items-center">
-                     <div className="flex-shrink-0">
-                       <svg className="h-5 w-5 text-orange-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-                     </div>
-                     <div className="ml-3">
-                       <p className="text-sm text-orange-700">
-                         Você está usando o plano Grátis. Limite de 3 relatórios.
-                         <span className="font-bold ml-1">
-                           ({reports.length}/3 utilizados)
-                         </span>
-                       </p>
-                     </div>
-                   </div>
-                   <Button size="sm" variant="outline" className="border-orange-200 text-orange-700 hover:bg-orange-100" onClick={() => setView(AppView.PLANS)}>
-                     Fazer Upgrade
-                   </Button>
-                 </div>
+               <div className="bg-orange-50 border-l-4 border-orange-400 p-3 text-sm text-orange-700 flex justify-between items-center">
+                 <span>Você tem {3 - reports.length} relatórios restantes no plano grátis.</span>
+                 <button onClick={() => setView(AppView.PLANS)} className="underline font-bold">Upgrade</button>
                </div>
              )}
 
-             <section><EvolutionChart reports={reports} /></section>
-             <section><ReportList reports={reports} onDelete={handleDeleteReport} /></section>
-             <section className="pt-8 mt-8 border-t border-gray-200">
-                <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">Dados</h4>
-                <div className="flex flex-wrap gap-4">
-                  <button onClick={handleExportData} className="text-sm text-blue-600 hover:text-blue-800">Backup</button>
-                  <label className="text-sm text-blue-600 hover:text-blue-800 cursor-pointer">
-                    Restaurar <input type="file" accept=".json" className="hidden" ref={importInputRef} onChange={handleImportData} />
-                  </label>
-                  <button onClick={handleClearData} className="text-sm text-red-500 hover:text-red-700 ml-auto">Limpar</button>
-                </div>
-             </section>
+             <EvolutionChart reports={reports} />
+             <ReportList reports={reports} onDelete={handleDeleteReport} />
+             
+             <div className="pt-4 border-t flex gap-4">
+                <button onClick={handleExportData} className="text-sm text-blue-600">Exportar Backup Local</button>
+             </div>
           </div>
         );
     }
@@ -593,38 +439,21 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <nav className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-teal-600 rounded-lg flex items-center justify-center text-white font-bold">TA</div>
-              <span className="text-xl font-bold text-teal-900 cursor-pointer" onClick={() => setView(AppView.DASHBOARD)}>TEA Analytics</span>
-            </div>
-            <div className="flex items-center gap-4">
-              <button onClick={() => setView(AppView.PLANS)} className="text-sm font-medium text-teal-600 hover:text-teal-800">Planos</button>
-              <div className="h-4 w-px bg-gray-300"></div>
-              <div className="flex items-center gap-2">
-                 <span className="text-sm text-gray-700 hidden sm:block">{currentUser.name}</span>
-                 <button onClick={handleLogout} className="text-sm text-gray-500 hover:text-red-600">Sair</button>
-              </div>
-            </div>
+       <nav className="bg-white border-b px-4 py-3 sticky top-0 z-10">
+          <div className="max-w-7xl mx-auto flex justify-between items-center">
+             <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView(AppView.DASHBOARD)}>
+               <div className="w-8 h-8 bg-teal-600 rounded text-white flex items-center justify-center font-bold">TA</div>
+               <span className="font-bold text-teal-900 text-lg">TEA Analytics</span>
+             </div>
+             <div className="flex gap-4 items-center">
+                <button onClick={() => setView(AppView.PLANS)} className="text-sm text-teal-600 font-medium">Planos</button>
+                <button onClick={handleLogout} className="text-sm text-gray-500">Sair</button>
+             </div>
           </div>
-        </div>
-      </nav>
-      <main className="py-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+       </nav>
+       <main className="p-4 md:p-8">
           {renderDashboardContent()}
-        </div>
-      </main>
-      <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-in {
-          animation: fade-in 0.3s ease-out forwards;
-        }
-      `}</style>
+       </main>
     </div>
   );
 }
