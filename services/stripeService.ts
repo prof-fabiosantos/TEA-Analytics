@@ -18,8 +18,16 @@ export const stripeService = {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erro ao conectar com servidor de pagamento');
+        let errorMessage = `Erro HTTP: ${response.status} (${response.statusText})`;
+        try {
+            // Tenta ler o erro em JSON vindo da nossa API
+            const errorData = await response.json();
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            // Se falhar (ex: Vercel retornou HTML de 500 ou 404), mantém a mensagem HTTP
+            console.error("Resposta da API não é JSON válido:", e);
+        }
+        throw new Error(errorMessage);
       }
 
       const { url } = await response.json();

@@ -1,14 +1,21 @@
 import Stripe from 'stripe';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).end('Method Not Allowed');
   }
 
+  // Verifica explicitamente se a chave existe antes de tentar inicializar
+  if (!process.env.STRIPE_SECRET_KEY) {
+      console.error("ERRO CRÍTICO: STRIPE_SECRET_KEY não definida nas variáveis de ambiente.");
+      return res.status(500).json({ 
+        error: "Configuração do servidor incompleta (Stripe Key ausente). Por favor, avise o administrador." 
+      });
+  }
+
   try {
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
     const { planType, userEmail, userId } = req.body;
 
     // Determina a URL base. 

@@ -1,24 +1,29 @@
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-// Inicializa cliente Supabase com privilégios de Admin (Service Role)
-// Isso é necessário para atualizar o perfil do usuário ignorando o RLS se necessário,
-// ou simplesmente porque estamos no backend.
-// Requer: process.env.SUPABASE_URL e process.env.SUPABASE_SERVICE_ROLE_KEY
-const supabaseAdmin = createClient(
-  process.env.VITE_SUPABASE_URL, 
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).end('Method Not Allowed');
   }
 
+  // Verificações de Segurança
+  if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Stripe Key missing in server config" });
+  }
+  if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(500).json({ error: "Supabase credentials missing in server config" });
+  }
+
   try {
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    
+    // Inicializa cliente Supabase com privilégios de Admin (Service Role)
+    const supabaseAdmin = createClient(
+      process.env.VITE_SUPABASE_URL, 
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
     const { sessionId } = req.body;
 
     if (!sessionId) {

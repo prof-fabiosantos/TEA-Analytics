@@ -34,9 +34,11 @@ export const Plans: React.FC<PlansProps> = ({ currentUser, onSelectPlan, onCance
       } else {
         throw new Error("URL de pagamento inválida");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      addToast("Erro ao iniciar pagamento. Verifique se o 'server.js' está rodando (npm run server).", "error");
+      const msg = error.message || "Erro desconhecido";
+      // Mostra o erro real para facilitar debug em produção
+      addToast(`Erro no pagamento: ${msg}`, "error");
       setLoadingPlan(null);
     }
   };
