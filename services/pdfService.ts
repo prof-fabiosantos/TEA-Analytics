@@ -1,41 +1,73 @@
 import * as pdfjsLib from 'pdfjs-dist';
 
-// ATENÇÃO: A versão do worker DEVE bater exatamente com a versão definida no importmap do index.html
-// No index.html está: "pdfjs-dist": "https://esm.sh/pdfjs-dist@4.8.69"
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://esm.sh/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+// FIX: Detecta se a biblioteca está no export default (comum em CDNs ESM como esm.sh) ou no root
+// Se 'GlobalWorkerOptions' não existir diretamente, tentamos acessar via '.default'
+const pdfLib = (pdfjsLib as any).default?.GlobalWorkerOptions ? (pdfjsLib as any).default : pdfjsLib;
+
+// Versão 3.11.174 - Estável para ambientes ESM/CDN (deve coincidir com index.html)
+const PDFJS_VERSION = '3.11.174';
+
+// Configura o worker apenas se o objeto da biblioteca foi resolvido corretamente
+if (pdfLib.GlobalWorkerOptions) {
+  pdfLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+} else {
+  console.error("CRÍTICO: Não foi possível localizar GlobalWorkerOptions no pdfjs-dist. A extração de PDF falhará.");
+}
 
 export const extractTextFromPdf = async (file: File): Promise<string> => {
   try {
-    console.log(`PDF.js Version: ${pdfjsLib.version}`);
+    console.log(`Iniciando extração PDF com versão da lib: ${pdfLib.version}`);
     
     const arrayBuffer = await file.arrayBuffer();
     
-    // Load the document
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-    const pdf = await loadingTask.promise;
+    // Usa a referência resolvida 'pdfLib' para chamar getDocument
+    const loadingTask = pdfLib.getDocument({
+      data: arrayBuffer,
+      cMapUrl: `https://esm.sh/pdfjs-dist@${PDFJS_VERSION}/cmaps/`,
+      cMapPacked: true,
+    });
+
+    const doc = await loadingTask.promise;
+    console.log(`PDF carregado. Páginas: ${doc.numPages}`);
     
     let fullText = '';
     
-    // Iterate through pages
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      
-      // Extract strings from text items
-      const pageText = textContent.items
-        .map((item: any) => item.str || '') 
-        .join(' ');
+    // Itera sobre as páginas
+    for (let i = 1; i <= doc.numPages; i++) {
+      try {
+        const page = await doc.getPage(i);
+        const textContent = await page.getTextContent();
         
-      fullText += `--- Página ${i} ---\n${pageText}\n\n`;
+        const pageText = textContent.items
+          .map((item: any) => item.str || '') 
+          .join(' ');
+          
+        fullText += `--- Página ${i} ---\n${pageText}\n\n`;
+      } catch (pageError) {
+        console.warn(`Erro ao ler página ${i}:`, pageError);
+        fullText += `--- Página ${i} (Erro na leitura) ---\n\n`;
+      }
     }
     
     if (!fullText.trim()) {
-      throw new Error("O PDF parece estar vazio ou é uma imagem escaneada (sem texto selecionável).");
+      throw new Error("O texto extraído está vazio. O PDF pode ser uma imagem (scaneado) sem camada de texto (OCR).");
     }
     
     return fullText;
-  } catch (error) {
-    console.error("Error extracting PDF text:", error);
-    throw new Error("Falha ao ler o arquivo PDF. Verifique se o arquivo não está corrompido, protegido por senha ou se as versões da biblioteca estão sincronizadas.");
+  } catch (error: any) {
+    console.error("Erro CRÍTICO na extração do PDF:", error);
+    
+    const technicalMessage = error.message || error.toString();
+    
+    // Tratamento de mensagens comuns de erro do PDF.js
+    if (technicalMessage.includes("Setting up fake worker") || technicalMessage.includes("workerSrc")) {
+       throw new Error(`Erro de configuração do PDF (Worker). Recarregue a página e tente novamente.`);
+    }
+    
+    if (technicalMessage.includes("Password")) {
+       throw new Error("O arquivo PDF está protegido por senha.");
+    }
+
+    throw new Error(`Falha técnica: ${technicalMessage}`);
   }
 };

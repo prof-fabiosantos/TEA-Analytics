@@ -99,7 +99,6 @@ function App() {
        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
           if (mounted) {
             // Lógica crítica: Só mostra "Carregando" se ainda não tivermos o usuário correto carregado.
-            // Isso evita o "flicker" ou sobrescrever um usuário já carregado com "Carregando..."
             setCurrentUser(prev => {
               if (prev && prev.id === session.user.id && prev.name !== 'Carregando...') {
                 return prev; // Mantém o usuário atual se já estiver carregado
@@ -254,7 +253,7 @@ function App() {
     }
 
     setIsUploading(true);
-    // Limpa conteúdo anterior para evitar confusão se o PDF falhar
+    // Limpa conteúdo anterior
     setNewReportContent(""); 
     
     // Mostra feedback visual imediato
@@ -262,10 +261,13 @@ function App() {
     setNewReportContent(loadingMsg);
 
     try {
-      if (file.type === 'application/pdf') {
+      // Verifica MIME type ou extensão
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+      if (isPdf) {
         const text = await extractTextFromPdf(file);
         if (!text || text.trim().length < 10) {
-          throw new Error("PDF sem texto legível ou vazio.");
+          throw new Error("PDF processado, mas resultou em texto vazio.");
         }
         setNewReportContent(text);
         setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
@@ -292,11 +294,12 @@ function App() {
         return; // Retorna para não cair no finally do PDF
       }
     } catch (error: any) {
-      console.error("Upload error:", error);
-      addToast(`Erro no upload: ${error.message}`, "error");
-      setNewReportContent(""); // Limpa mensagem de carregamento em caso de erro
+      console.error("Upload error details:", error);
+      // Remove a mensagem genérica e mostra a mensagem real do erro
+      addToast(`Erro: ${error.message}`, "error");
+      setNewReportContent(""); 
     } finally {
-      if (file.type === 'application/pdf') setIsUploading(false);
+      setIsUploading(false);
       e.target.value = ''; // Reseta o input file
     }
   };
