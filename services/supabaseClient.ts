@@ -1,30 +1,49 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Access environment variables via process.env which is polyfilled in vite.config.ts
-let supabaseUrl = process.env.VITE_SUPABASE_URL || '';
-let supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
+// Helper function to safely get env vars in Vite (local or production)
+const getEnvVar = (key: string) => {
+  // 1. Tenta o padrão nativo do Vite (import.meta.env)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+    // @ts-ignore
+    return import.meta.env[key];
+  }
+  // 2. Tenta o polyfill do process.env (definido no vite.config.ts)
+  if (typeof process !== 'undefined' && process.env && process.env[key]) {
+    return process.env[key];
+  }
+  return '';
+};
+
+let supabaseUrl = getEnvVar('VITE_SUPABASE_URL');
+let supabaseAnonKey = getEnvVar('VITE_SUPABASE_ANON_KEY');
 
 // CORREÇÃO AUTOMÁTICA: Se o usuário colocou a string de conexão do banco (postgresql://)
-// tentamos extrair o ID do projeto para formar a URL correta da API.
 if (supabaseUrl.startsWith('postgresql://')) {
-  console.warn("AVISO: Você usou a string de conexão do banco (postgresql://) na variável VITE_SUPABASE_URL.");
-  console.warn("Tentando corrigir automaticamente para a URL da API (https://...).");
-  
-  // Tenta extrair o project ref. Ex: ...@db.PROJECT_ID.supabase.co...
+  console.warn("AVISO: Detectada string de conexão DB em VITE_SUPABASE_URL.");
   const match = supabaseUrl.match(/@db\.([a-z0-9]+)\.supabase\.co/);
   if (match && match[1]) {
     supabaseUrl = `https://${match[1]}.supabase.co`;
-    console.log(`URL corrigida para: ${supabaseUrl}`);
+    console.log(`URL corrigida automaticamente para API: ${supabaseUrl}`);
   }
 }
 
-// Fallback para evitar crash se estiver vazio
-if (!supabaseUrl) supabaseUrl = 'https://placeholder.supabase.co';
+// Validação
+const isUrlPlaceholder = !supabaseUrl || supabaseUrl.includes('placeholder');
+const isKeyPlaceholder = !supabaseAnonKey || supabaseAnonKey.includes('placeholder');
 
-// CRITICAL FIX: createClient lança erro se a chave for vazia. Usamos um placeholder para evitar crash.
+if (!supabaseUrl) {
+    console.warn("VITE_SUPABASE_URL não encontrada. Usando placeholder.");
+    supabaseUrl = 'https://placeholder.supabase.co';
+}
+
 if (!supabaseAnonKey) {
-    console.warn("VITE_SUPABASE_ANON_KEY está faltando ou vazia. Usando chave placeholder para evitar crash.");
-    supabaseAnonKey = 'placeholder-key-to-prevent-crash';
+    console.warn("VITE_SUPABASE_ANON_KEY não encontrada. Usando placeholder.");
+    supabaseAnonKey = 'placeholder-key';
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+export const isSupabaseConfigured = () => {
+    return !isUrlPlaceholder && !isKeyPlaceholder;
+};

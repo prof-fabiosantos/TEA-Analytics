@@ -11,7 +11,7 @@ import { stripeService } from './services/stripeService';
 import { LandingPage } from './components/LandingPage';
 import { Plans } from './components/Plans';
 import { useToast } from './contexts/ToastContext';
-import { supabase } from './services/supabaseClient';
+import { supabase, isSupabaseConfigured } from './services/supabaseClient';
 
 function App() {
   const { addToast } = useToast();
@@ -44,6 +44,12 @@ function App() {
 
     const checkSession = async () => {
       try {
+        // Verifica se Supabase está configurado antes de tentar conectar
+        if (!isSupabaseConfigured()) {
+            console.warn("Supabase não configurado. Pulando verificação de sessão.");
+            return;
+        }
+
         // Tenta obter usuário atual
         let user = await authService.getCurrentUser();
         
@@ -167,6 +173,8 @@ function App() {
 
   const loadUserData = async () => {
     try {
+      if (!isSupabaseConfigured()) return;
+      
       const data = await reportService.getAll();
       setReports(data);
       
@@ -189,18 +197,41 @@ function App() {
     e.preventDefault();
     if (authLoading) return;
 
+    if (!isSupabaseConfigured()) {
+        addToast("CONFIGURAÇÃO AUSENTE: Conecte o projeto ao Supabase nas variáveis de ambiente.", "error");
+        return;
+    }
+
     setAuthError('');
     setAuthLoading(true);
 
     try {
-      await authService.loginWithPassword(authEmail, authPassword);
+      // Timeout de segurança: Se o login demorar mais de 15s (ex: problema de rede ou config errada), aborta.
+      const loginPromise = authService.loginWithPassword(authEmail, authPassword);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("O servidor demorou muito para responder. Verifique sua conexão.")), 15000)
+      );
+
+      await Promise.race([loginPromise, timeoutPromise]);
+      
       addToast("Login realizado com sucesso!", "success");
-      // A mudança de View ocorre via onAuthStateChange
-      // Não damos setLoading(false) aqui porque queremos esperar o evento do Supabase disparar
+      // O redirect acontece via onAuthStateChange, mas se falhar o listener, removemos loading aqui por segurança
+      // após um pequeno delay para dar tempo da transição
+      setTimeout(() => {
+          setAuthLoading(false);
+      }, 2000);
+
     } catch (err: any) {
       console.error("Login Error Details:", err);
       setAuthError(err.message || "Erro desconhecido ao tentar logar.");
-      addToast("Falha no login. Verifique email e senha.", "error");
+      
+      // Mensagens amigáveis para erros comuns
+      if (err.message?.includes('Invalid login credentials')) {
+         addToast("Email ou senha incorretos.", "error");
+      } else {
+         addToast(err.message || "Falha no login.", "error");
+      }
+      
       setAuthLoading(false);
     }
   };
@@ -208,12 +239,23 @@ function App() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (authLoading) return;
+
+    if (!isSupabaseConfigured()) {
+        addToast("CONFIGURAÇÃO AUSENTE: Conecte o projeto ao Supabase.", "error");
+        return;
+    }
     
     setAuthError('');
     setAuthLoading(true);
 
     try {
-      await authService.register(authName, authEmail, authPassword);
+      const registerPromise = authService.register(authName, authEmail, authPassword);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("O servidor demorou muito para responder.")), 15000)
+      );
+
+      await Promise.race([registerPromise, timeoutPromise]);
+      
       addToast("Conta criada! Verifique seu email para confirmar antes de entrar.", "success");
       setAuthLoading(false);
       // Opcional: Redirecionar para login ou avisar para checar email

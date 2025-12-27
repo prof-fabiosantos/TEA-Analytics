@@ -3,21 +3,24 @@ import react from '@vitejs/plugin-react';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Load env file based on `mode` in the current working directory.
-  // Set the third parameter to '' to load all env regardless of the `VITE_` prefix.
-  const env = loadEnv(mode, '.', '');
+  // Carrega variáveis de arquivos .env (local)
+  // Use (process as any) to avoid TS error: Property 'cwd' does not exist on type 'Process'
+  const envFile = loadEnv(mode, (process as any).cwd(), '');
+  
+  // Mescla variáveis do sistema (Vercel/Node) com as do arquivo .env
+  // Isso garante que as variáveis definidas no Painel da Vercel sejam vistas aqui
+  const processEnv = { ...process.env, ...envFile };
 
   return {
     plugins: [react()],
     define: {
-      // Polyfill process.env so it can be used in client-side code consistently
-      'process.env.API_KEY': JSON.stringify(env.API_KEY),
-      'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
-      'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY)
+      // Polyfill process.env para compatibilidade, injetando os valores reais do build
+      'process.env.API_KEY': JSON.stringify(processEnv.API_KEY),
+      'process.env.VITE_SUPABASE_URL': JSON.stringify(processEnv.VITE_SUPABASE_URL),
+      'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(processEnv.VITE_SUPABASE_ANON_KEY)
     },
     server: {
       proxy: {
-        // Redireciona chamadas /api para o servidor Express local
         '/api': {
           target: 'http://localhost:3000',
           changeOrigin: true,
