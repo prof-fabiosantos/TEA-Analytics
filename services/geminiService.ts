@@ -16,22 +16,20 @@ const SYSTEM_INSTRUCTION = `
 Você é um especialista clínico sênior em desenvolvimento infantil e autismo (TEA).
 
 MISSÃO PRINCIPAL:
-Responder dúvidas do usuário com base EXCLUSIVAMENTE nos trechos de relatórios fornecidos (Contexto Recuperado).
+Responder dúvidas do usuário utilizando PRIORITARIAMENTE os trechos de relatórios fornecidos (Contexto Recuperado).
 
 DIRETRIZES:
-1. **Evidência**: Use os trechos fornecidos. Se a informação não estiver nos trechos, diga "Não encontrei informações específicas sobre isso nos relatórios consultados".
-2. **Citação**: Sempre mencione a DATA do relatório de onde você tirou a informação (ex: "Segundo o relatório de 12/05/2024...").
-3. **Tom**: Clínico, encorajador, porém realista.
+1. **Evidência**: Use os trechos fornecidos para fundamentar sua resposta.
+2. **Citação**: Sempre mencione a DATA e o TIPO do relatório ao citar uma informação (ex: "Segundo o relatório de Fonoaudiologia de 12/05/2024...").
+3. **Limitação**: Se a informação solicitada NÃO estiver nos trechos, você pode usar seu conhecimento geral sobre TEA para dar orientações genéricas, mas DEVE deixar claro que **"essa informação específica não consta nos relatórios analisados"**.
+4. **Tom**: Clínico, acolhedor, objetivo e profissional.
 
-Estruture a resposta de forma clara e direta.
+Se o contexto estiver vazio, peça gentilmente para o usuário fazer upload de relatórios para uma análise personalizada.
 `;
 
 export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetric[]> => {
   if (reports.length === 0) return [];
 
-  // For Evolution Chart, we still need a summary of all reports. 
-  // Since this is done once and usually involves fewer tokens than a long chat history, 
-  // we keep the logic but limit content size if needed.
   const sortedReports = [...reports].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
   const prompt = `
@@ -77,19 +75,16 @@ export const analyzeEvolution = async (reports: Report[]): Promise<EvolutionMetr
   }
 };
 
-// Initialization check helper
-let isRAGInitialized = false;
-
 export const sendChatMessage = async (
   currentMessage: string,
   history: ChatMessage[],
   reports: Report[]
 ): Promise<string> => {
   
-  // 1. Initialize RAG Index if not done yet
-  if (!isRAGInitialized && reports.length > 0) {
+  // 1. Ensure Reports are Indexed
+  // O ragService agora gerencia internamente se precisa reindexar ou não com base nos dados.
+  if (reports.length > 0) {
     await indexReports(reports);
-    isRAGInitialized = true;
   }
 
   // 2. Retrieve Relevant Context
@@ -103,8 +98,9 @@ export const sendChatMessage = async (
   ===========================
   `).join('\n');
 
+  console.log("Contexto enviado para LLM:", contextText ? "Sim (Com dados)" : "Vazio");
+
   // 3. Construct Prompt with RAG Context
-  // Note: We reduce history to last 5 messages to save tokens, relying on RAG for factual context
   const recentHistory = history.slice(-5); 
 
   try {
@@ -119,8 +115,8 @@ export const sendChatMessage = async (
         { 
           role: 'user', 
           parts: [{ text: `
-            CONTEXTO RECUPERADO DOS DOCUMENTOS (Use isso para responder):
-            ${contextText.length > 0 ? contextText : "Nenhum trecho relevante encontrado."}
+            CONTEXTO RECUPERADO DOS DOCUMENTOS (Use essas informações como verdade absoluta sobre o paciente):
+            ${contextText.length > 0 ? contextText : "Nenhum trecho relevante encontrado nos relatórios para esta pergunta específica."}
 
             PERGUNTA DO USUÁRIO:
             ${currentMessage}
@@ -135,6 +131,6 @@ export const sendChatMessage = async (
     return response.text || "Não consegui formular uma resposta.";
   } catch (error) {
     console.error("Error in chat:", error);
-    return "Ocorreu um erro ao processar. Verifique a API Key.";
+    return "Ocorreu um erro ao processar sua mensagem. Verifique a API Key ou tente novamente mais tarde.";
   }
 };

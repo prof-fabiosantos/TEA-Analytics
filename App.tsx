@@ -401,6 +401,7 @@ function App() {
                       <option value="Fonoaudiologia">Fonoaudiologia</option>
                       <option value="Terapia Ocupacional">T.O.</option>
                       <option value="Escolar">Escolar</option>
+                      <option value="Avaliação de Atividades">Avaliação de Atividades</option>
                       <option value="Outro">Outro</option>
                     </select>
                   </div>

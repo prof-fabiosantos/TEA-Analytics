@@ -114,15 +114,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ reports, messages,
               }`}
             >
               {msg.role === 'model' ? (
-                <ReactMarkdown 
-                  className="prose prose-sm max-w-none prose-teal 
+                <div className="prose prose-sm max-w-none prose-teal 
                     prose-p:my-2 prose-p:leading-relaxed 
                     prose-headings:text-gray-900 prose-headings:font-bold prose-headings:my-2
                     prose-ul:my-2 prose-li:my-0.5
-                    prose-strong:text-gray-900 prose-strong:font-bold"
-                >
-                  {msg.text}
-                </ReactMarkdown>
+                    prose-strong:text-gray-900 prose-strong:font-bold">
+                  <ReactMarkdown>
+                    {msg.text}
+                  </ReactMarkdown>
+                </div>
               ) : (
                 <div className="whitespace-pre-wrap">{msg.text}</div>
               )}

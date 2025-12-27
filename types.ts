@@ -3,7 +3,7 @@ export interface Report {
   title: string;
   date: string;
   content: string;
-  type: 'ABA' | 'Fonoaudiologia' | 'Terapia Ocupacional' | 'Escolar' | 'Outro';
+  type: 'ABA' | 'Fonoaudiologia' | 'Terapia Ocupacional' | 'Escolar' | 'Avaliação de Atividades' | 'Outro';
 }
 
 export interface ChatMessage {
