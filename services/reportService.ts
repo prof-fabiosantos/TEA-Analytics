@@ -36,8 +36,8 @@ export const reportService = {
       .single();
 
     if (error) {
-      console.error('Error creating report:', error);
-      throw error;
+      console.error('CRITICAL: Error creating report in DB. Check if "reports" table exists and RLS policies are active.', error);
+      throw new Error(`Database Error: ${error.message} (${error.code})`);
     }
 
     return data;

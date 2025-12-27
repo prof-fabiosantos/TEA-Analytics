@@ -26,12 +26,11 @@ function App() {
   // Auth Form State
   const [authEmail, setAuthEmail] = useState('');
   const [authName, setAuthName] = useState('');
-  const [authPassword, setAuthPassword] = useState(''); // Added password state
+  const [authPassword, setAuthPassword] = useState(''); 
   const [authError, setAuthError] = useState('');
 
   // App Functional State
   const [isUploading, setIsUploading] = useState(false);
-  const importInputRef = useRef<HTMLInputElement>(null);
   const [newReportTitle, setNewReportTitle] = useState('');
   const [newReportDate, setNewReportDate] = useState('');
   const [newReportType, setNewReportType] = useState<Report['type']>('ABA');
@@ -39,12 +38,20 @@ function App() {
 
   // 1. Initial Auth Check
   useEffect(() => {
+    let mounted = true;
+
     const checkSession = async () => {
       try {
         const user = await authService.getCurrentUser();
-        if (user) {
+        if (mounted && user) {
           setCurrentUser(user);
-          await loadUserData(); // Fetch reports
+          // Tenta carregar dados, mas não bloqueia a UI se falhar
+          try {
+            await loadUserData(); 
+          } catch (dataError) {
+            console.error("Erro ao carregar dados:", dataError);
+            addToast("Erro ao conectar ao banco. Verifique sua conexão.", "error");
+          }
           
           // Verify Payment logic
           const params = new URLSearchParams(window.location.search);
@@ -55,12 +62,9 @@ function App() {
              try {
                const verification = await stripeService.verifySession(sessionId);
                if (verification.verified) {
-                 // Refresh user profile to get new plan
                  const updatedUser = await authService.refreshProfile();
-                 setCurrentUser(updatedUser);
+                 if (mounted) setCurrentUser(updatedUser);
                  addToast("Pagamento confirmado! Plano atualizado.", "success");
-               } else {
-                 addToast("Pagamento pendente ou não confirmado.", "warning");
                }
              } catch (err) {
                console.error(err);
@@ -69,33 +73,57 @@ function App() {
              }
           }
 
-          setView(AppView.DASHBOARD);
+          if (mounted) setView(AppView.DASHBOARD);
         }
       } catch (e) {
         console.error("Auth init error", e);
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     };
 
-    // Listen to Supabase Auth Changes (Login/Logout)
+    // Failsafe: Prevent infinite loading
+    const timeoutTimer = setTimeout(() => {
+      if (mounted) {
+        setLoading((prevLoading) => {
+          if (prevLoading) {
+            console.warn("Auth check timed out. Force stopping loading.");
+            return false;
+          }
+          return prevLoading;
+        });
+      }
+    }, 4000); // 4 segundos timeout
+
+    // Listen to Supabase Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
        if (event === 'SIGNED_IN' && session) {
-          const user = await authService.getUserProfile(session.user.id);
-          setCurrentUser(user);
-          await loadUserData();
-          setView(AppView.DASHBOARD);
+          if (mounted) {
+            // Apenas atualiza se já não estiver logado para evitar reload desnecessário
+            setCurrentUser(prev => prev?.id === session.user.id ? prev : { id: session.user.id, name: 'Carregando...', email: session.user.email || '', plan: 'free' });
+            
+            const user = await authService.getUserProfile(session.user.id);
+            setCurrentUser(user);
+            await loadUserData();
+            setView(AppView.DASHBOARD);
+            setLoading(false);
+          }
        } else if (event === 'SIGNED_OUT') {
-          setCurrentUser(null);
-          setReports([]);
-          setChatMessages([]);
-          setView(AppView.LANDING);
+          if (mounted) {
+            setCurrentUser(null);
+            setReports([]);
+            setChatMessages([]);
+            setView(AppView.LANDING);
+            setLoading(false);
+          }
        }
     });
     
-    checkSession();
+    checkSession().then(() => clearTimeout(timeoutTimer));
 
     return () => {
+      mounted = false;
+      clearTimeout(timeoutTimer);
       subscription.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,7 +134,6 @@ function App() {
       const data = await reportService.getAll();
       setReports(data);
       
-      // Reset Chat
       setChatMessages([{
         id: 'welcome',
         role: 'model',
@@ -115,19 +142,16 @@ function App() {
       }]);
     } catch (e) {
       console.error(e);
-      addToast("Erro ao carregar dados.", "error");
+      // Não joga erro para não quebrar o checkSession
     }
   };
 
   // --- Auth Handlers ---
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     try {
-      // Trying password login first
       await authService.loginWithPassword(authEmail, authPassword);
-      // State update happens in onAuthStateChange
       addToast("Login realizado com sucesso!", "success");
     } catch (err) {
       setAuthError((err as Error).message);
@@ -141,7 +165,6 @@ function App() {
     try {
       await authService.register(authName, authEmail, authPassword);
       addToast("Conta criada! Verifique seu email para confirmar.", "success");
-      // Supabase usually requires email confirmation or auto-login depending on settings
     } catch (err) {
       setAuthError((err as Error).message);
       addToast((err as Error).message, "error");
@@ -154,15 +177,10 @@ function App() {
   };
 
   const handlePlanUpdate = (plan: 'free' | 'pro' | 'semester') => {
-    // This function is just for UI updates optimistically in some apps, 
-    // but here we rely on the payment flow returning to the app to update the DB.
-    // However, if manual update needed:
-    // authService.updatePlan(currentUser.id, plan); // Not implemented client side securely
     console.log("Plan selection initiated", plan);
   };
 
   // --- App Logic ---
-
   const handleAddReport = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -187,14 +205,15 @@ function App() {
         content: newReportContent
       });
 
-      setReports([newReport, ...reports]); // Add to top
+      setReports([newReport, ...reports]); 
       setNewReportTitle('');
       setNewReportDate('');
       setNewReportContent('');
       setView(AppView.DASHBOARD);
       addToast("Relatório salvo na nuvem!", "success");
-    } catch (e) {
-      addToast("Erro ao salvar relatório.", "error");
+    } catch (e: any) {
+      console.error("Failed to save report:", e);
+      addToast(`Erro ao salvar: ${e.message || 'Verifique o console'}`, "error");
     } finally {
       setIsUploading(false);
     }
@@ -250,7 +269,6 @@ function App() {
     }
   };
 
-  // --- Data Management (Local JSON export still useful) ---
   const handleExportData = () => {
       const dataStr = JSON.stringify(reports, null, 2);
       const blob = new Blob([dataStr], { type: "application/json" });
@@ -264,8 +282,15 @@ function App() {
   };
 
   if (loading) return (
-    <div className="flex h-screen items-center justify-center bg-slate-50">
+    <div className="flex h-screen items-center justify-center bg-slate-50 flex-col gap-4">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
+      <p className="text-gray-500 text-sm">Conectando ao banco de dados...</p>
+      <button 
+        onClick={() => setLoading(false)} 
+        className="text-xs text-blue-500 underline mt-4"
+      >
+        Demorando muito? Cancelar carregamento
+      </button>
     </div>
   );
 
@@ -275,6 +300,9 @@ function App() {
       return (
         <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
           <div className="sm:mx-auto sm:w-full sm:max-w-md">
+             <div className="flex justify-center mb-4">
+               <div className="w-12 h-12 bg-teal-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">TA</div>
+             </div>
              <h2 className="text-center text-3xl font-extrabold text-gray-900">Login</h2>
           </div>
           <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
@@ -288,7 +316,7 @@ function App() {
                   <label className="block text-sm font-medium text-gray-700">Senha</label>
                   <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
-                {authError && <p className="text-red-500 text-sm">{authError}</p>}
+                {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
                 <Button type="submit" className="w-full">Entrar</Button>
               </form>
               <div className="mt-6 text-center">
@@ -321,7 +349,7 @@ function App() {
                   <label className="block text-sm font-medium text-gray-700">Senha</label>
                   <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
-                {authError && <p className="text-red-500 text-sm">{authError}</p>}
+                {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
                 <Button type="submit" className="w-full">Cadastrar</Button>
               </form>
                <div className="mt-6 text-center">
@@ -336,7 +364,6 @@ function App() {
     return <LandingPage onLogin={() => setView(AppView.LOGIN)} onRegister={() => setView(AppView.REGISTER)} />;
   }
 
-  // DASHBOARD CONTENT RENDERER
   const renderDashboardContent = () => {
     switch (view) {
       case AppView.UPLOAD:
