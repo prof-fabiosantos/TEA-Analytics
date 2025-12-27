@@ -59,7 +59,13 @@ if (!supabaseAnonKey || isKeyPlaceholder) {
     supabaseAnonKey = supabaseAnonKey || 'placeholder-key';
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+});
 
 export const isSupabaseConfigured = () => {
     return !isUrlPlaceholder && !isKeyPlaceholder;

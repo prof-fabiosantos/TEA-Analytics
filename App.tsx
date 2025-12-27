@@ -38,125 +38,107 @@ function App() {
   const [newReportType, setNewReportType] = useState<Report['type']>('ABA');
   const [newReportContent, setNewReportContent] = useState('');
 
-  // 1. Initial Auth Check
+  // 1. Initial Logic: Handle URL Params & Auth Listener
   useEffect(() => {
     let mounted = true;
 
-    const checkSession = async () => {
-      try {
-        if (!isSupabaseConfigured()) {
-            console.warn("Supabase não configurado. Pulando verificação de sessão.");
-            return;
-        }
+    // --- A. URL PARAMETER HANDLING (Stripe Return) ---
+    // Executamos isso IMEDIATAMENTE para limpar a URL e evitar loops
+    const handlePaymentReturn = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get('session_id');
+      const canceled = params.get('canceled');
 
-        // Recupera params da URL
-        const params = new URLSearchParams(window.location.search);
-        const sessionId = params.get('session_id');
-        const canceled = params.get('canceled');
+      // Limpa a URL imediatamente se houver params do Stripe
+      // Isso impede que um refresh ou nova tentativa de login reprocesse o pagamento
+      if (sessionId || canceled) {
+         window.history.replaceState({}, document.title, window.location.pathname);
+      }
 
-        // Limpa URL imediatamente para evitar loops
-        if (sessionId || canceled) {
-           window.history.replaceState({}, document.title, window.location.pathname);
-        }
+      if (canceled) {
+          addToast("Pagamento cancelado.", "info");
+          return;
+      }
 
-        if (canceled) {
-            addToast("Pagamento cancelado.", "info");
-        }
-
-        // Tenta buscar usuário atual (Sessão)
-        // Isso deve rodar independente do status do pagamento para garantir login
-        let user = await authService.getCurrentUser();
-
-        // Lógica de Pagamento
-        if (sessionId) {
-            setPaymentProcessing(true);
-            try {
-              // Verifica no backend
-              const verification = await stripeService.verifySession(sessionId);
-              
-              if (verification.verified) {
-                addToast("Pagamento confirmado! Plano atualizado.", "success");
-                
-                // Força atualização local se o usuário já estiver carregado
-                if (user) {
-                    const forcedUser: User = { ...user, plan: verification.plan };
-                    if (mounted) {
-                        setCurrentUser(forcedUser);
-                        user = forcedUser;
-                    }
-                }
-              } else {
-                 // Pagamento não verificado, mas deixamos o usuário entrar como Free
-                 addToast("Status do pagamento pendente. Verifique seu plano em instantes.", "info");
-              }
-            } catch (err) {
-              console.error("Erro verificação pagamento:", err);
-              addToast("Não foi possível confirmar o pagamento automaticamente. Entre em contato se o plano não atualizar.", "warning");
-            } finally {
-              if (mounted) setPaymentProcessing(false);
+      if (sessionId) {
+          setPaymentProcessing(true);
+          try {
+            console.log("Verificando sessão de pagamento:", sessionId);
+            // Verifica no backend
+            const verification = await stripeService.verifySession(sessionId);
+            
+            if (verification.verified) {
+              addToast("Pagamento confirmado! Seu plano foi atualizado.", "success");
+              // Se o usuário não estiver logado (currentUser é null), ele verá a tela de login
+              // mas saberá que o pagamento deu certo.
+            } else {
+               addToast("O pagamento foi recebido, mas o status ainda está pendente. Verifique seu plano em instantes.", "info");
             }
-        } 
-
-        // Finaliza Setup
-        if (mounted) {
-            if (user) {
-                setCurrentUser(user);
-                await loadUserData();
-                setView(AppView.DASHBOARD);
-            } else if (sessionId) {
-                // Se pagou mas não achamos a sessão (browser diferente ou cookie perdido), pede login
-                addToast("Pagamento recebido! Faça login para acessar.", "success");
-                setView(AppView.LOGIN);
-            }
-        }
-
-      } catch (e) {
-        console.error("Auth init error", e);
-      } finally {
-        if (mounted) setLoading(false);
+          } catch (err) {
+            console.error("Erro verificação pagamento:", err);
+            // Não mostramos erro crítico, pois o dinheiro pode ter caído e só a verificação falhou
+            addToast("Pagamento processado. Faça login para ver seu plano atualizado.", "success");
+          } finally {
+            if (mounted) setPaymentProcessing(false);
+          }
       }
     };
 
-    // Failsafe timer (caso checkSession trave muito)
-    const timeoutTimer = setTimeout(() => {
-      if (mounted && loading) setLoading(false);
-    }, 5000);
+    handlePaymentReturn();
 
-    // Listen to Supabase Auth Changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
-          if (mounted) {
-            // Se já temos um usuário carregado e verificado, não sobrescrevemos desnecessariamente
-            // a menos que seja um login novo
-            if (!currentUser || event === 'SIGNED_IN') {
-                 const userProfile = await authService.getUserProfile(session.user.id);
-                 setCurrentUser(userProfile);
-                 await loadUserData();
-                 setView(AppView.DASHBOARD);
-            }
-            setLoading(false);
-            setAuthLoading(false);
-          }
-       } else if (event === 'SIGNED_OUT') {
-          if (mounted) {
-            setCurrentUser(null);
-            setReports([]);
-            setChatMessages([]);
-            setView(AppView.LANDING);
-            setLoading(false);
-            setAuthLoading(false);
-          }
-       }
-    });
-    
-    checkSession().then(() => clearTimeout(timeoutTimer));
+    // --- B. AUTH STATE LISTENER ---
+    // Esta é a fonte da verdade para o estado do usuário
+    if (isSupabaseConfigured()) {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+           console.log("Auth Event:", event);
+           
+           if (session?.user) {
+              // Usuário Logado
+              if (mounted) {
+                 // Só buscamos o profile se ele mudou ou é o primeiro load
+                 // Se acabamos de processar um pagamento, queremos forçar o refresh do profile
+                 try {
+                     const userProfile = await authService.getUserProfile(session.user.id);
+                     setCurrentUser(userProfile);
+                     await loadUserData();
+                     setView(AppView.DASHBOARD);
+                 } catch (e) {
+                     console.error("Erro ao carregar profile:", e);
+                     // Fallback básico
+                     setCurrentUser({ 
+                         id: session.user.id, 
+                         email: session.user.email || '', 
+                         name: 'Usuário', 
+                         plan: 'free' 
+                     });
+                     setView(AppView.DASHBOARD);
+                 } finally {
+                     setLoading(false);
+                     setAuthLoading(false);
+                 }
+              }
+           } else {
+              // Usuário Deslogado
+              if (mounted) {
+                setCurrentUser(null);
+                setReports([]);
+                setChatMessages([]);
+                // Se não estamos processando pagamento, vai pra Landing ou Login
+                // Se paymentProcessing for true, a UI mostra o spinner, então ok mudar a view "por baixo"
+                setView(prev => prev === AppView.REGISTER ? AppView.REGISTER : prev === AppView.LOGIN ? AppView.LOGIN : AppView.LANDING);
+                setLoading(false);
+                setAuthLoading(false);
+              }
+           }
+        });
 
-    return () => {
-      mounted = false;
-      clearTimeout(timeoutTimer);
-      subscription.unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        return () => {
+          mounted = false;
+          subscription.unsubscribe();
+        };
+    } else {
+        setLoading(false);
+    }
   }, []);
 
   const loadUserData = async () => {
@@ -194,18 +176,9 @@ function App() {
     setAuthLoading(true);
 
     try {
-      // O authService agora tem timeout interno no DB fetch.
-      // O loginAuth é rápido.
       await authService.loginWithPassword(authEmail, authPassword);
-      
       addToast("Login realizado com sucesso!", "success");
-      
-      // A mudança de estado acontece via onAuthStateChange listener
-      // Mas garantimos limpeza do loading aqui caso algo falhe
-      setTimeout(() => {
-          if (authLoading) setAuthLoading(false);
-      }, 3000);
-
+      // O listener onAuthStateChange cuidará do redirecionamento
     } catch (err: any) {
       console.error("Login Error Details:", err);
       setAuthError(err.message || "Erro desconhecido ao tentar logar.");
@@ -242,6 +215,7 @@ function App() {
       
       addToast("Conta criada! Verifique seu email para confirmar antes de entrar.", "success");
       setAuthLoading(false);
+      setView(AppView.LOGIN); // Manda para o login após registrar
     } catch (err: any) {
       console.error("Register Error Details:", err);
       setAuthError(err.message || "Erro ao criar conta.");
@@ -253,6 +227,7 @@ function App() {
   const handleLogout = async () => {
     await authService.logout();
     addToast("Você saiu da conta.", "info");
+    setView(AppView.LANDING);
   };
 
   const handlePlanUpdate = (plan: 'free' | 'pro' | 'semester') => {
@@ -370,7 +345,7 @@ function App() {
     <div className="flex h-screen items-center justify-center bg-slate-50 flex-col gap-4">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
       <p className="text-gray-500 text-sm">
-        {paymentProcessing ? "Validando pagamento..." : "Carregando TEA Analytics..."}
+        {paymentProcessing ? "Validando e atualizando plano..." : "Carregando TEA Analytics..."}
       </p>
     </div>
   );
