@@ -7,6 +7,7 @@ import { ChatInterface } from './components/ChatInterface';
 import { Button } from './components/Button';
 import { extractTextFromPdf } from './services/pdfService';
 import { authService } from './services/authService';
+import { stripeService } from './services/stripeService'; // Import stripeService
 import { LandingPage } from './components/LandingPage';
 import { Plans } from './components/Plans';
 import { useToast } from './contexts/ToastContext';
@@ -44,19 +45,33 @@ function App() {
         if (user) {
           setCurrentUser(user);
           
-          // CHECK FOR STRIPE SUCCESS REDIRECT
+          // CHECK FOR STRIPE SUCCESS REDIRECT (SECURE VERIFICATION)
           const params = new URLSearchParams(window.location.search);
-          if (params.get('payment_success') === 'true' && params.get('plan')) {
-             const newPlan = params.get('plan') as 'pro' | 'semester';
+          const sessionId = params.get('session_id');
+
+          if (sessionId) {
+             // Show immediate feedback to user
+             addToast("Verificando pagamento...", "info");
              
-             // In a real app, we would verify with backend here if the webhook was processed
-             // For this implementation, we update the local state upon successful redirect return
-             const updatedUser = authService.updatePlan(user.id, newPlan);
-             setCurrentUser(updatedUser);
-             addToast("Pagamento confirmado! Seu plano foi atualizado.", "success");
-             
-             // Clean URL
-             window.history.replaceState({}, document.title, window.location.pathname);
+             try {
+               // Verify with backend
+               const verification = await stripeService.verifySession(sessionId);
+               
+               if (verification.verified && verification.plan) {
+                 const newPlan = verification.plan as 'pro' | 'semester';
+                 const updatedUser = authService.updatePlan(user.id, newPlan);
+                 setCurrentUser(updatedUser);
+                 addToast("Pagamento confirmado! Seu plano foi atualizado.", "success");
+               } else {
+                 addToast("Pagamento não confirmado ou pendente.", "warning");
+               }
+             } catch (err) {
+               console.error("Payment verification failed", err);
+               addToast("Erro ao verificar pagamento.", "error");
+             } finally {
+               // Clean URL to prevent re-verification loops
+               window.history.replaceState({}, document.title, window.location.pathname);
+             }
           }
 
           setView(AppView.DASHBOARD);
@@ -401,47 +416,95 @@ function App() {
   const renderDashboardContent = () => {
     switch (view) {
       case AppView.UPLOAD:
+        // Logic to check limit for free users
+        const isFreeUser = currentUser?.plan === 'free';
+        const usageCount = reports.length;
+        const freeLimit = 3;
+        const limitReached = isFreeUser && usageCount >= freeLimit;
+
         return (
           <div className="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-md border border-gray-200 animate-fade-in">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold text-gray-800">Adicionar Novo Relatório</h2>
               <Button variant="outline" size="sm" onClick={() => setView(AppView.DASHBOARD)}>Cancelar</Button>
             </div>
-            <form onSubmit={handleAddReport} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Título do Relatório</label>
-                  <input type="text" required value={newReportTitle} onChange={e => setNewReportTitle(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
+
+            {limitReached ? (
+              <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-orange-100 mb-4">
+                  <svg className="h-6 w-6 text-orange-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Data</label>
-                  <input type="date" required value={newReportDate} onChange={e => setNewReportDate(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
+                <h3 className="text-lg leading-6 font-medium text-gray-900">Limite Atingido</h3>
+                <p className="mt-2 text-sm text-gray-500 max-w-sm mx-auto">
+                  Você já utilizou seus {freeLimit} relatórios gratuitos. Faça o upgrade para o plano Profissional para enviar relatórios ilimitados.
+                </p>
+                <div className="mt-6 flex justify-center gap-3">
+                  <Button onClick={() => setView(AppView.PLANS)} className="bg-gradient-to-r from-teal-500 to-teal-600">
+                    Fazer Upgrade Agora
+                  </Button>
+                  <Button variant="outline" onClick={() => setView(AppView.DASHBOARD)}>
+                    Voltar
+                  </Button>
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
-                <select value={newReportType} onChange={e => setNewReportType(e.target.value as Report['type'])} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500">
-                  <option value="ABA">ABA</option>
-                  <option value="Fonoaudiologia">Fonoaudiologia</option>
-                  <option value="Terapia Ocupacional">Terapia Ocupacional</option>
-                  <option value="Escolar">Escolar</option>
-                  <option value="Outro">Outro</option>
-                </select>
-              </div>
-              <div>
-                <div className="mb-2 p-3 bg-blue-50 rounded-lg border border-blue-100 flex items-center justify-between">
-                  <span className="text-sm text-blue-700">Arquivo (.txt, .pdf)?</span>
-                  <label className={`cursor-pointer bg-white text-blue-600 px-3 py-1 rounded border border-blue-200 text-sm hover:bg-blue-50 transition-colors ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
-                    {isUploading ? 'Lendo...' : 'Upload'}
-                    <input type="file" accept=".txt,.md,.json,.pdf" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
-                  </label>
-                </div>
-                <textarea required rows={10} value={newReportContent} onChange={e => setNewReportContent(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 font-mono text-sm" placeholder="Conteúdo do relatório..."/>
-              </div>
-              <div className="pt-4 flex justify-end">
-                <Button type="submit" size="lg" disabled={isUploading}>Salvar Relatório</Button>
-              </div>
-            </form>
+            ) : (
+              <>
+                {isFreeUser && (
+                  <div className="mb-6">
+                    <div className="flex justify-between text-sm font-medium mb-1">
+                      <span className="text-gray-500">Uso do Plano Grátis</span>
+                      <span className={`${usageCount >= freeLimit ? 'text-red-600' : 'text-teal-600'}`}>
+                        {usageCount} / {freeLimit} relatórios
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2.5">
+                      <div 
+                        className="bg-teal-600 h-2.5 rounded-full transition-all duration-500" 
+                        style={{ width: `${(usageCount / freeLimit) * 100}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+                
+                <form onSubmit={handleAddReport} className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Título do Relatório</label>
+                      <input type="text" required value={newReportTitle} onChange={e => setNewReportTitle(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Data</label>
+                      <input type="date" required value={newReportDate} onChange={e => setNewReportDate(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500"/>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+                    <select value={newReportType} onChange={e => setNewReportType(e.target.value as Report['type'])} className="w-full rounded-lg border-gray-300 border p-2 focus:ring-teal-500 focus:border-teal-500">
+                      <option value="ABA">ABA</option>
+                      <option value="Fonoaudiologia">Fonoaudiologia</option>
+                      <option value="Terapia Ocupacional">Terapia Ocupacional</option>
+                      <option value="Escolar">Escolar</option>
+                      <option value="Outro">Outro</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="mb-2 p-3 bg-blue-50 rounded-lg border border-blue-100 flex items-center justify-between">
+                      <span className="text-sm text-blue-700">Arquivo (.txt, .pdf)?</span>
+                      <label className={`cursor-pointer bg-white text-blue-600 px-3 py-1 rounded border border-blue-200 text-sm hover:bg-blue-50 transition-colors ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                        {isUploading ? 'Lendo...' : 'Upload'}
+                        <input type="file" accept=".txt,.md,.json,.pdf" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+                      </label>
+                    </div>
+                    <textarea required rows={10} value={newReportContent} onChange={e => setNewReportContent(e.target.value)} className="w-full rounded-lg border-gray-300 border p-2 font-mono text-sm" placeholder="Conteúdo do relatório..."/>
+                  </div>
+                  <div className="pt-4 flex justify-end">
+                    <Button type="submit" size="lg" disabled={isUploading}>Salvar Relatório</Button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         );
       case AppView.CHAT:

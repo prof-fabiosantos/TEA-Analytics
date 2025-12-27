@@ -30,6 +30,27 @@ export const stripeService = {
     }
   },
 
+  verifySession: async (sessionId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/verify-payment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sessionId }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Falha na verificação');
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("Verification Error:", error);
+      return { verified: false };
+    }
+  },
+
   checkServerHealth: async () => {
     // Em serverless não há "health check" tradicional, assumimos true se a rede estiver ok
     return true; 
