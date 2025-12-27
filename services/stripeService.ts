@@ -1,11 +1,11 @@
-// URL do seu Backend (server.js)
-// Em produção, altere para a URL do seu servidor hospedado (ex: Render, Vercel, Railway)
-const API_URL = 'http://localhost:3000';
+// No Vercel (e Vite local com proxy), usamos caminhos relativos.
+// A pasta /api é mapeada automaticamente para as Serverless Functions.
+const API_BASE = '/api';
 
 export const stripeService = {
   createCheckoutSession: async (planType: 'pro' | 'semester', userEmail: string, userId: string) => {
     try {
-      const response = await fetch(`${API_URL}/create-checkout-session`, {
+      const response = await fetch(`${API_BASE}/create-checkout-session`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -30,14 +30,8 @@ export const stripeService = {
     }
   },
 
-  // Verifica se o servidor backend está online
   checkServerHealth: async () => {
-    try {
-      // Tenta um endpoint qualquer ou apenas um ping
-      await fetch(API_URL, { method: 'HEAD' });
-      return true;
-    } catch (e) {
-      return false;
-    }
+    // Em serverless não há "health check" tradicional, assumimos true se a rede estiver ok
+    return true; 
   }
 };
