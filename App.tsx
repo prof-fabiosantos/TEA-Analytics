@@ -191,8 +191,14 @@ function App() {
       return;
     }
 
-    if (!newReportTitle || !newReportDate || !newReportContent) {
-      addToast("Preencha todos os campos.", "error");
+    // Validação extra do conteúdo
+    if (!newReportContent || newReportContent.trim().length === 0) {
+      addToast("O conteúdo do relatório está vazio. Digite algo ou faça upload de um PDF válido.", "error");
+      return;
+    }
+
+    if (!newReportTitle || !newReportDate) {
+      addToast("Preencha título e data.", "error");
       return;
     }
 
@@ -229,31 +235,50 @@ function App() {
     }
 
     setIsUploading(true);
-    setNewReportContent("Processando arquivo...");
+    // Limpa conteúdo anterior para evitar confusão se o PDF falhar
+    setNewReportContent(""); 
+    
+    // Mostra feedback visual imediato
+    const loadingMsg = "Lendo arquivo PDF... aguarde.";
+    setNewReportContent(loadingMsg);
 
     try {
       if (file.type === 'application/pdf') {
         const text = await extractTextFromPdf(file);
-        if (!text || text.trim().length < 10) throw new Error("PDF sem texto legível.");
+        if (!text || text.trim().length < 10) {
+          throw new Error("PDF sem texto legível ou vazio.");
+        }
         setNewReportContent(text);
         setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
-        addToast("PDF processado!", "success");
+        addToast("PDF processado com sucesso!", "success");
       } else {
         const reader = new FileReader();
         reader.onload = (ev) => {
-            setNewReportContent(ev.target?.result as string);
-            setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
+            const text = ev.target?.result as string;
+            if (!text.trim()) {
+                addToast("Arquivo de texto vazio.", "error");
+                setNewReportContent("");
+            } else {
+                setNewReportContent(text);
+                setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
+            }
             setIsUploading(false);
         };
+        reader.onerror = () => {
+            addToast("Erro ao ler arquivo de texto.", "error");
+            setNewReportContent("");
+            setIsUploading(false);
+        }
         reader.readAsText(file);
-        return;
+        return; // Retorna para não cair no finally do PDF
       }
-    } catch (error) {
-      addToast("Erro no upload.", "error");
-      setNewReportContent("");
+    } catch (error: any) {
+      console.error("Upload error:", error);
+      addToast(`Erro no upload: ${error.message}`, "error");
+      setNewReportContent(""); // Limpa mensagem de carregamento em caso de erro
     } finally {
       if (file.type === 'application/pdf') setIsUploading(false);
-      e.target.value = '';
+      e.target.value = ''; // Reseta o input file
     }
   };
 
@@ -412,10 +437,19 @@ function App() {
                         Upload PDF/Txt <input type="file" className="hidden" onChange={handleFileUpload} accept=".pdf,.txt" disabled={isUploading}/>
                       </label>
                     </div>
-                    <textarea className="w-full border p-2 rounded h-40" value={newReportContent} onChange={e=>setNewReportContent(e.target.value)} required placeholder="Cole o texto ou faça upload..."></textarea>
+                    <textarea 
+                      className="w-full border p-2 rounded h-40" 
+                      value={newReportContent} 
+                      onChange={e=>setNewReportContent(e.target.value)} 
+                      required 
+                      placeholder="Cole o texto ou faça upload..."
+                      disabled={isUploading}
+                    ></textarea>
                   </div>
                   <div className="flex justify-end">
-                    <Button type="submit" disabled={isUploading}>{isUploading ? 'Salvando...' : 'Salvar Relatório'}</Button>
+                    <Button type="submit" disabled={isUploading || !newReportContent.trim()}>
+                      {isUploading ? 'Processando...' : 'Salvar Relatório'}
+                    </Button>
                   </div>
                 </form>
              )}
