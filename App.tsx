@@ -29,6 +29,7 @@ function App() {
   const [authName, setAuthName] = useState('');
   const [authPassword, setAuthPassword] = useState(''); 
   const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false); // NOVO: Estado de loading do botão de auth
 
   // App Functional State
   const [isUploading, setIsUploading] = useState(false);
@@ -72,8 +73,6 @@ function App() {
 
                 if (user) {
                     // ATUALIZAÇÃO OTIMISTA:
-                    // Força o plano no estado local imediatamente usando o retorno da verificação,
-                    // pois o banco de dados pode ter um leve delay de replicação.
                     const forcedUser: User = {
                         ...user,
                         plan: verification.plan // Usa o plano confirmado pelo Stripe
@@ -81,7 +80,6 @@ function App() {
                     
                     if (mounted) {
                         setCurrentUser(forcedUser);
-                        // Atualiza user local para o restante da função usar o plano correto
                         user = forcedUser; 
                     }
                 }
@@ -124,14 +122,11 @@ function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
           if (mounted) {
-            // Verifica se já temos um usuário com plano definido (vinda do checkSession acima)
-            // para não sobrescrever com dados antigos durante o delay do DB.
             const hasVerifiedPlan = currentUser?.plan && currentUser.plan !== 'free';
 
             if (!hasVerifiedPlan) {
                 try {
                     const userProfile = await authService.getUserProfile(session.user.id);
-                    // Se o nome vier como 'Usuário' (padrão), tenta pegar do metadata do Google/Email
                     if (userProfile.name === 'Usuário' && session.user.user_metadata?.name) {
                         userProfile.name = session.user.user_metadata.name;
                     }
@@ -142,10 +137,11 @@ function App() {
             }
             
             await loadUserData();
-            if (view === AppView.LANDING || view === AppView.LOGIN) {
+            if (view === AppView.LANDING || view === AppView.LOGIN || view === AppView.REGISTER) {
                 setView(AppView.DASHBOARD);
             }
             setLoading(false);
+            setAuthLoading(false); // Garante que o loading pare ao entrar
           }
        } else if (event === 'SIGNED_OUT') {
           if (mounted) {
@@ -154,6 +150,7 @@ function App() {
             setChatMessages([]);
             setView(AppView.LANDING);
             setLoading(false);
+            setAuthLoading(false);
           }
        }
     });
@@ -190,26 +187,41 @@ function App() {
   // --- Auth Handlers ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (authLoading) return;
+
     setAuthError('');
+    setAuthLoading(true);
+
     try {
       await authService.loginWithPassword(authEmail, authPassword);
       addToast("Login realizado com sucesso!", "success");
-      // View will change via onAuthStateChange
-    } catch (err) {
-      setAuthError((err as Error).message);
-      addToast("Falha no login. Verifique email/senha.", "error");
+      // A mudança de View ocorre via onAuthStateChange
+      // Não damos setLoading(false) aqui porque queremos esperar o evento do Supabase disparar
+    } catch (err: any) {
+      console.error("Login Error Details:", err);
+      setAuthError(err.message || "Erro desconhecido ao tentar logar.");
+      addToast("Falha no login. Verifique email e senha.", "error");
+      setAuthLoading(false);
     }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (authLoading) return;
+    
     setAuthError('');
+    setAuthLoading(true);
+
     try {
       await authService.register(authName, authEmail, authPassword);
-      addToast("Conta criada! Verifique seu email para confirmar.", "success");
-    } catch (err) {
-      setAuthError((err as Error).message);
-      addToast((err as Error).message, "error");
+      addToast("Conta criada! Verifique seu email para confirmar antes de entrar.", "success");
+      setAuthLoading(false);
+      // Opcional: Redirecionar para login ou avisar para checar email
+    } catch (err: any) {
+      console.error("Register Error Details:", err);
+      setAuthError(err.message || "Erro ao criar conta.");
+      addToast(err.message, "error");
+      setAuthLoading(false);
     }
   };
 
@@ -361,7 +373,14 @@ function App() {
                   <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
                 {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
-                <Button type="submit" className="w-full">Entrar</Button>
+                <Button type="submit" className="w-full" disabled={authLoading}>
+                   {authLoading ? (
+                     <span className="flex items-center justify-center gap-2">
+                       <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                       Entrando...
+                     </span>
+                   ) : "Entrar"}
+                </Button>
               </form>
               <div className="mt-6 text-center">
                  <button onClick={() => setView(AppView.REGISTER)} className="text-sm text-teal-600">Criar conta</button>
@@ -394,7 +413,14 @@ function App() {
                   <input type="password" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="mt-1 block w-full border border-gray-300 rounded-md p-2"/>
                 </div>
                 {authError && <p className="text-red-500 text-sm bg-red-50 p-2 rounded">{authError}</p>}
-                <Button type="submit" className="w-full">Cadastrar</Button>
+                <Button type="submit" className="w-full" disabled={authLoading}>
+                    {authLoading ? (
+                     <span className="flex items-center justify-center gap-2">
+                       <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                       Cadastrando...
+                     </span>
+                   ) : "Cadastrar"}
+                </Button>
               </form>
                <div className="mt-6 text-center">
                  <button onClick={() => setView(AppView.LOGIN)} className="text-sm text-teal-600">Já tem conta? Entre</button>
