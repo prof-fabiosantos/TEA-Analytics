@@ -18,6 +18,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [view, setView] = useState<AppView>(AppView.LANDING);
   const [loading, setLoading] = useState(true);
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
 
   // Data State
   const [reports, setReports] = useState<Report[]>([]);
@@ -42,36 +43,63 @@ function App() {
 
     const checkSession = async () => {
       try {
-        const user = await authService.getCurrentUser();
+        // Tenta obter usuário atual
+        let user = await authService.getCurrentUser();
         
         // Verifica Pagamento Stripe (query params)
         const params = new URLSearchParams(window.location.search);
         const sessionId = params.get('session_id');
+        const canceled = params.get('canceled');
+
+        if (canceled) {
+            addToast("Pagamento cancelado.", "info");
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
 
         if (sessionId) {
-            addToast("Verificando pagamento...", "info");
+            setPaymentProcessing(true); // Evita mostrar tela de login enquanto processa
+            addToast("Confirmando pagamento com o banco...", "info");
             try {
               const verification = await stripeService.verifySession(sessionId);
               if (verification.verified) {
                 addToast("Pagamento confirmado! Plano atualizado.", "success");
-                // Força refresh do usuário após pagamento
-                const updatedUser = await authService.refreshProfile();
-                if (mounted && updatedUser) setCurrentUser(updatedUser);
+                
+                // Se a sessão foi perdida no redirect, user pode ser null. 
+                // Mas o backend já atualizou o banco. Se user for null, pedimos login.
+                if (!user) {
+                   // Tenta recuperar sessão mais uma vez
+                   user = await authService.getCurrentUser();
+                }
+
+                if (user) {
+                    // Força refresh dos dados do usuário para pegar o novo plano
+                    const updatedUser = await authService.getUserProfile(user.id);
+                    if (mounted) setCurrentUser(updatedUser);
+                }
               }
             } catch (err) {
               console.error(err);
+              addToast("Erro ao verificar pagamento.", "error");
             } finally {
               // Limpa a URL
               window.history.replaceState({}, document.title, window.location.pathname);
+              if (mounted) setPaymentProcessing(false);
             }
         } else if (mounted && user) {
            setCurrentUser(user);
         }
 
-        if (mounted && (user || sessionId)) {
-          // Se temos usuário (ou estamos recuperando de um pagamento), carregamos os dados
+        // Se após tudo isso tivermos um usuário, carregamos os dados
+        // Nota: checamos 'user' local ou 'currentUser' state
+        const activeUser = user || currentUser;
+        
+        if (mounted && activeUser) {
           await loadUserData(); 
           setView(AppView.DASHBOARD);
+        } else if (mounted && sessionId && !user) {
+            // Se tinha sessionID (pagou) mas não achou user, manda pro login com aviso
+            addToast("Pagamento recebido! Por favor, faça login novamente para acessar.", "success");
+            setView(AppView.LOGIN);
         }
 
       } catch (e) {
@@ -81,28 +109,17 @@ function App() {
       }
     };
 
-    // Failsafe: Prevent infinite loading
+    // Failsafe
     const timeoutTimer = setTimeout(() => {
-      if (mounted) {
-        setLoading((prevLoading) => {
-          if (prevLoading) {
-            console.warn("Auth check timed out. Force stopping loading.");
-            return false;
-          }
-          return prevLoading;
-        });
-      }
-    }, 4000);
+      if (mounted) setLoading(false);
+    }, 5000);
 
     // Listen to Supabase Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
           if (mounted) {
-            // Lógica crítica: Só mostra "Carregando" se ainda não tivermos o usuário correto carregado.
             setCurrentUser(prev => {
-              if (prev && prev.id === session.user.id && prev.name !== 'Carregando...') {
-                return prev; // Mantém o usuário atual se já estiver carregado
-              }
+              if (prev && prev.id === session.user.id && prev.name !== 'Carregando...') return prev;
               return { 
                 id: session.user.id, 
                 name: prev?.name || 'Carregando...', 
@@ -116,11 +133,13 @@ function App() {
               if (mounted) {
                 setCurrentUser(user);
                 await loadUserData();
-                setView(AppView.DASHBOARD);
+                if (view === AppView.LANDING || view === AppView.LOGIN) {
+                    setView(AppView.DASHBOARD);
+                }
                 setLoading(false);
               }
             } catch (error) {
-              console.error("Erro ao carregar perfil no AuthChange:", error);
+              console.error("Erro perfil AuthChange:", error);
             }
           }
        } else if (event === 'SIGNED_OUT') {
@@ -149,7 +168,6 @@ function App() {
       const data = await reportService.getAll();
       setReports(data);
       
-      // Reinicia chat apenas se estiver vazio
       setChatMessages(prev => {
         if (prev.length > 0) return prev;
         return [{
@@ -171,6 +189,7 @@ function App() {
     try {
       await authService.loginWithPassword(authEmail, authPassword);
       addToast("Login realizado com sucesso!", "success");
+      // View will change via onAuthStateChange
     } catch (err) {
       setAuthError((err as Error).message);
       addToast("Falha no login. Verifique email/senha.", "error");
@@ -209,9 +228,8 @@ function App() {
       return;
     }
 
-    // Validação extra do conteúdo
     if (!newReportContent || newReportContent.trim().length === 0) {
-      addToast("O conteúdo do relatório está vazio. Digite algo ou faça upload de um PDF válido.", "error");
+      addToast("Conteúdo vazio.", "error");
       return;
     }
 
@@ -234,10 +252,9 @@ function App() {
       setNewReportDate('');
       setNewReportContent('');
       setView(AppView.DASHBOARD);
-      addToast("Relatório salvo na nuvem!", "success");
+      addToast("Relatório salvo!", "success");
     } catch (e: any) {
-      console.error("Failed to save report:", e);
-      addToast(`Erro ao salvar: ${e.message || 'Verifique o console'}`, "error");
+      addToast(`Erro ao salvar: ${e.message}`, "error");
     } finally {
       setIsUploading(false);
     }
@@ -253,54 +270,33 @@ function App() {
     }
 
     setIsUploading(true);
-    // Limpa conteúdo anterior
-    setNewReportContent(""); 
-    
-    // Mostra feedback visual imediato
-    const loadingMsg = "Lendo arquivo PDF... aguarde.";
-    setNewReportContent(loadingMsg);
+    setNewReportContent("Lendo arquivo... aguarde.");
 
     try {
-      // Verifica MIME type ou extensão
       const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
       if (isPdf) {
         const text = await extractTextFromPdf(file);
-        if (!text || text.trim().length < 10) {
-          throw new Error("PDF processado, mas resultou em texto vazio.");
-        }
         setNewReportContent(text);
         setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
-        addToast("PDF processado com sucesso!", "success");
+        addToast("PDF processado!", "success");
       } else {
         const reader = new FileReader();
         reader.onload = (ev) => {
             const text = ev.target?.result as string;
-            if (!text.trim()) {
-                addToast("Arquivo de texto vazio.", "error");
-                setNewReportContent("");
-            } else {
-                setNewReportContent(text);
-                setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
-            }
+            setNewReportContent(text || "");
+            setNewReportTitle(file.name.replace(/\.[^/.]+$/, ""));
             setIsUploading(false);
         };
-        reader.onerror = () => {
-            addToast("Erro ao ler arquivo de texto.", "error");
-            setNewReportContent("");
-            setIsUploading(false);
-        }
         reader.readAsText(file);
-        return; // Retorna para não cair no finally do PDF
+        return; 
       }
     } catch (error: any) {
-      console.error("Upload error details:", error);
-      // Remove a mensagem genérica e mostra a mensagem real do erro
       addToast(`Erro: ${error.message}`, "error");
       setNewReportContent(""); 
     } finally {
       setIsUploading(false);
-      e.target.value = ''; // Reseta o input file
+      e.target.value = '';
     }
   };
 
@@ -328,16 +324,12 @@ function App() {
       document.body.removeChild(link);
   };
 
-  if (loading) return (
+  if (loading || paymentProcessing) return (
     <div className="flex h-screen items-center justify-center bg-slate-50 flex-col gap-4">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
-      <p className="text-gray-500 text-sm">Conectando ao banco de dados...</p>
-      <button 
-        onClick={() => setLoading(false)} 
-        className="text-xs text-blue-500 underline mt-4"
-      >
-        Demorando muito? Cancelar carregamento
-      </button>
+      <p className="text-gray-500 text-sm">
+        {paymentProcessing ? "Finalizando pagamento seguro..." : "Carregando TEA Analytics..."}
+      </p>
     </div>
   );
 

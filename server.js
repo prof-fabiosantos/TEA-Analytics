@@ -22,12 +22,14 @@ const DOMAIN = process.env.CLIENT_URL || 'http://localhost:5173';
 
 const PLANS = {
   'pro': {
-    priceId: process.env.STRIPE_PRICE_ID_PRO, 
-    name: 'Plano Profissional'
+    id: process.env.STRIPE_PRICE_ID_PRO, 
+    name: 'Plano Profissional',
+    amount: 2000
   },
   'semester': {
-    priceId: process.env.STRIPE_PRICE_ID_SEMESTER,
-    name: 'Plano Econômico'
+    id: process.env.STRIPE_PRICE_ID_SEMESTER,
+    name: 'Plano Econômico',
+    amount: 11000
   }
 };
 
@@ -36,46 +38,44 @@ app.post('/create-checkout-session', async (req, res) => {
     const { planType, userEmail, userId } = req.body;
     
     const selectedPlan = PLANS[planType];
-    const rawPriceId = selectedPlan?.priceId;
-    const planName = selectedPlan?.name || 'Assinatura TEA Analytics';
+    const configId = selectedPlan?.id || '';
 
-    // Validação: Só usa o ID se começar com 'price_', senão usa fallback
-    const useExplicitPrice = rawPriceId && rawPriceId.startsWith('price_');
+    // LÓGICA DE CORREÇÃO INTELIGENTE:
+    let lineItem;
 
-    const sessionConfig = {
-      payment_method_types: ['card'],
-      line_items: [
-        useExplicitPrice
-          ? { 
-              price: rawPriceId, 
-              quantity: 1 
-            }
-          : {
-              price_data: {
+    if (configId.startsWith('price_')) {
+        // Caso Ideal: ID de Preço
+        lineItem = { price: configId, quantity: 1 };
+    } else {
+        // Fallback: ID de Produto (prod_) ou nada
+        const productConfig = configId.startsWith('prod_') 
+            ? { product: configId } 
+            : { product_data: { name: selectedPlan.name } };
+
+        lineItem = {
+            price_data: {
                 currency: 'brl',
-                product_data: {
-                  name: planName,
-                },
-                unit_amount: planType === 'pro' ? 2000 : 11000, 
+                ...productConfig,
+                unit_amount: selectedPlan.amount,
                 recurring: {
-                  interval: 'month',
-                  interval_count: planType === 'semester' ? 6 : 1
+                    interval: 'month',
+                    interval_count: planType === 'semester' ? 6 : 1
                 }
-              },
-              quantity: 1,
-            }
-      ],
+            },
+            quantity: 1,
+        };
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [lineItem],
       mode: 'subscription', 
       success_url: `${DOMAIN}/?payment_success=true&plan=${planType}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${DOMAIN}/?canceled=true`,
       customer_email: userEmail,
-      metadata: {
-        userId: userId,
-        planType: planType
-      }
-    };
+      metadata: { userId, planType }
+    });
 
-    const session = await stripe.checkout.sessions.create(sessionConfig);
     res.json({ url: session.url });
   } catch (error) {
     console.error("Stripe Error:", error);
